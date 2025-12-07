@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+httpx
+sqlmodel
+psycopg2-binary
+pydantic
+pydantic-settings
