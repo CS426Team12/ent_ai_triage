@@ -15,13 +15,7 @@ Rules:
 """
 
 TRIAGE_USER_PROMPT_TEMPLATE = """
-Transcript:
-"{transcript}"
+The patient said: <<TRANSCRIPT>>
 
-Return JSON ONLY in this format:
-
-{
-  "summary": "...",
-  "urgency": "low|medium|high"
-}
+Return ONLY a short clinical summary. Avoid JSON when using tiny models.
 """

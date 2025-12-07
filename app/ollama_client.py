@@ -44,7 +44,7 @@ async def call_ollama(transcript: str) -> str:
     prompt = (
         TRIAGE_SYSTEM_PROMPT.strip() +
         "\n" +
-        TRIAGE_USER_PROMPT_TEMPLATE.format(transcript=transcript).strip()
+        TRIAGE_USER_PROMPT_TEMPLATE.replace("<<TRANSCRIPT>>", transcript) ## changed from strip 
     )
 
     payload = {

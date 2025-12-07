@@ -1,6 +1,4 @@
-# from fastapi import APIRouter
-# from pydantic import BaseModel
-# from app.ollama_client import call_ollama
+#! worked
 
 # router = APIRouter(prefix="/ai")
 
@@ -24,35 +22,54 @@
 
 #     return TriageResponse(summary=summary, urgency=urgency)
 
+# added with prompt work
+
+# from fastapi import APIRouter
+# from pydantic import BaseModel
+# from app.ollama_client import call_ollama
+# from app.utils import extract_json_from_model_output
+# from app.backend_client import save_triage_to_backend
+
 
 from fastapi import APIRouter
 from pydantic import BaseModel
+
 from app.ollama_client import call_ollama
-from app.utils import extract_json_from_model_output
 from app.backend_client import save_triage_to_backend
 
 router = APIRouter(prefix="/ai")
 
+
+# ------------------------
+# Request + Response Models
+# ------------------------
 class TriageRequest(BaseModel):
     transcript: str
-    patient_id: str  # YOU NEED THIS FOR SAVING INTO DB
+    patient_id: str  # required for saving into backend DB
+
 
 class TriageResponse(BaseModel):
     summary: str
     urgency: str
 
+
+# ------------------------
+# AI Triage Endpoint
+# ------------------------
 @router.post("/triage", response_model=TriageResponse)
 async def triage(payload: TriageRequest):
-    # 1. Run LLM
+
     raw = await call_ollama(payload.transcript)
+    summary = raw.strip()
+    urgency = "unknown"
+    confidence = 0.0
 
-    # 2. Parse model response
-    result = extract_json_from_model_output(raw)
-    summary = result.get("summary", "")
-    urgency = result.get("urgency", "unknown")
+    await save_triage_to_backend(
+        patient_id=payload.patient_id,
+        transcript=payload.transcript,
+        summary=summary,
+        urgency=urgency,
+        confidence=confidence,
+    )
 
-    # 3. Save to backend DB
-    await save_triage_to_backend(payload.patient_id, summary, urgency)
-
-    # 4. Return response to UI
-    return TriageResponse(summary=summary, urgency=urgency)
+    return {"summary": summary, "urgency": urgency}
