@@ -12,6 +12,11 @@ class Settings(BaseSettings):
     DB_PORT: str = "5432"
     DB_NAME: str | None = None
 
+    BACKEND_BASE_URL: str
+    BACKEND_USERNAME: str
+    BACKEND_PASSWORD: str
+
+
     # Redis (AI should use DB 1)
     REDIS_URL: str = "redis://localhost:6379/1"
 

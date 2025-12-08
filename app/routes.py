@@ -39,10 +39,6 @@ from app.backend_client import save_triage_to_backend
 
 router = APIRouter(prefix="/ai")
 
-
-# ------------------------
-# Request + Response Models
-# ------------------------
 class TriageRequest(BaseModel):
     transcript: str
     patient_id: str  # required for saving into backend DB
@@ -53,13 +49,11 @@ class TriageResponse(BaseModel):
     urgency: str
 
 
-# ------------------------
-# AI Triage Endpoint
-# ------------------------
 @router.post("/triage", response_model=TriageResponse)
 async def triage(payload: TriageRequest):
 
     raw = await call_ollama(payload.transcript)
+
     summary = raw.strip()
     urgency = "unknown"
     confidence = 0.0
@@ -72,4 +66,7 @@ async def triage(payload: TriageRequest):
         confidence=confidence,
     )
 
-    return {"summary": summary, "urgency": urgency}
+    return {
+        "summary": summary,
+        "urgency": urgency
+    }
