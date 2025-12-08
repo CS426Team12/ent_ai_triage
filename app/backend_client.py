@@ -1,6 +1,5 @@
 import httpx
 from app.config import settings
-from datetime import date
 
 SERVICE_TOKEN = None
 
@@ -30,26 +29,25 @@ async def get_service_token():
 async def save_triage_to_backend(patient_id, transcript, summary, urgency, confidence):
     token = await get_service_token()
 
+    # Enforce enum values
+    valid_urgencies = {"routine", "semi-urgent", "urgent"}
+    if urgency not in valid_urgencies:
+        urgency = "routine"
+
     payload = {
         "patientID": patient_id,
         "transcript": transcript,
         "AISummary": summary,
         "AIUrgency": urgency,
-        "AIConfidence": confidence,
+        "AIConfidence": confidence
+        # DO NOT SEND ANYTHING ELSE
 
-        # REQUIRED
-        "status": "pending",
-        "clinicianSummary": "",
-        "overrideSummary": "",
-        "overrideUrgency": "",
-
-        # REQUIRED BY DB (createdBy cannot be null)
-        "createdBy": "ddc37bcf-50e7-4429-ac7a-425804383b4d",
-        "dateCreated": date.today().isoformat()
     }
 
-
-    headers = {"Authorization": f"Bearer {token}"}
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
 
     async with httpx.AsyncClient() as client:
         resp = await client.post(
