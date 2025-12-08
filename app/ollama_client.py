@@ -53,12 +53,21 @@ async def call_ollama(transcript: str) -> str:
         "stream": False
     }
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient() as client:
+        headers = {"Content-Type": "application/json"}
+
         resp = await client.post(
             f"{settings.OLLAMA_BASE_URL}/api/generate",
-            json=payload
+            json=payload,
+            headers=headers
         )
-        resp.raise_for_status()
+
+    # if resp.status_code >= 400:
+    #     print("❌ Backend /triage-cases error:", resp.status_code)
+    #     print("❌ Error body:", resp.text)   # <— ADD THIS LINE
+    #     print("❌ Sent payload:", payload)    # <— AND THIS LINE
+
+    resp.raise_for_status()
 
     data = resp.json()
     raw_text = data.get("response", "")

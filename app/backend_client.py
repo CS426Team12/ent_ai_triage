@@ -1,14 +1,10 @@
 import httpx
 from app.config import settings
+from datetime import date
 
-# Global token cache
 SERVICE_TOKEN = None
 
 async def get_service_token():
-    """
-    Automatically logs in to the backend using the AI service account.
-    Caches the token so login happens only once.
-    """
     global SERVICE_TOKEN
 
     if SERVICE_TOKEN:
@@ -31,25 +27,27 @@ async def get_service_token():
     return SERVICE_TOKEN
 
 
-async def save_triage_to_backend(
-        patient_id: str,
-        transcript: str,
-        summary: str,
-        urgency: str,
-        confidence: float
-    ):
-    """
-    Creates a new triage-case record in the backend.
-    """
-    token = await get_service_token()  # auto-login
+async def save_triage_to_backend(patient_id, transcript, summary, urgency, confidence):
+    token = await get_service_token()
 
     payload = {
         "patientID": patient_id,
         "transcript": transcript,
-        "AIConfidence": confidence,
         "AISummary": summary,
-        "AIUrgency": urgency
+        "AIUrgency": urgency,
+        "AIConfidence": confidence,
+
+        # REQUIRED
+        "status": "pending",
+        "clinicianSummary": "",
+        "overrideSummary": "",
+        "overrideUrgency": "",
+
+        # REQUIRED BY DB (createdBy cannot be null)
+        "createdBy": "ddc37bcf-50e7-4429-ac7a-425804383b4d",
+        "dateCreated": date.today().isoformat()
     }
+
 
     headers = {"Authorization": f"Bearer {token}"}
 
@@ -57,19 +55,13 @@ async def save_triage_to_backend(
         resp = await client.post(
             f"{settings.BACKEND_BASE_URL}/triage-cases/",
             json=payload,
-            headers=headers
+            headers=headers,
         )
 
-        # If token expired → retry automatically once
-        if resp.status_code == 401:
-            SERVICE_TOKEN = None
-            token = await get_service_token()
-            headers = {"Authorization": f"Bearer {token}"}
+    if resp.status_code >= 400:
+        print("❌ REAL BACKEND ERROR FROM /triage-cases/")
+        print("Status:", resp.status_code)
+        print("Body:", resp.text)
+        print("Sent payload:", payload)
 
-            resp = await client.post(
-                f"{settings.BACKEND_BASE_URL}/triage-cases/",
-                json=payload,
-                headers=headers
-            )
-
-        resp.raise_for_status()
+    resp.raise_for_status()
