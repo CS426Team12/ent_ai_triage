@@ -40,7 +40,6 @@ async def save_triage_to_backend(patient_id, transcript, summary, urgency, confi
         "AISummary": summary,
         "AIUrgency": urgency,
         "AIConfidence": confidence
-        # DO NOT SEND ANYTHING ELSE
 
     }
 

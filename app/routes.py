@@ -9,7 +9,7 @@ router = APIRouter(prefix="/ai")
 
 class TriageRequest(BaseModel):
     transcript: str
-    patient_id: str  # required for saving into backend DB
+    patient_id: str # required for saving into backend DB
 
 
 class TriageResponse(BaseModel):

@@ -5,7 +5,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """Configuration for the AI service."""
 
-    # Database configuration (only needed if AI service writes directly to DB)
+    # Database configuration
     DB_USER: str | None = None
     DB_PW: str | None = None
     DB_HOST: str | None = None

@@ -71,7 +71,6 @@ def train_logistic_regression(
     final_clf = LogisticRegression(**grid.best_params_, multi_class='ovr', class_weight='balanced')
     final_clf.fit(X_full_dense, encode_labels(y)[0])
 
-    # Save model
     joblib.dump({
         'preprocessor': preprocessor,
         'model': final_clf,
