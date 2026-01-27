@@ -5,3 +5,6 @@ sqlmodel
 psycopg2-binary
 pydantic
 pydantic-settings
+joblib
+scikit-learn
+pandas

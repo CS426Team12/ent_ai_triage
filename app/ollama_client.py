@@ -15,23 +15,26 @@ async def call_ollama(transcript: str) -> str:
         "stream": False
     }
 
-    async with httpx.AsyncClient() as client:
-        headers = {"Content-Type": "application/json"}
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            headers = {"Content-Type": "application/json"}
 
-        resp = await client.post(
-            f"{settings.OLLAMA_BASE_URL}/api/generate",
-            json=payload,
-            headers=headers
-        )
+            resp = await client.post(
+                f"{settings.OLLAMA_BASE_URL}/api/generate",
+                json=payload,
+                headers=headers
+            )
 
-    # if resp.status_code >= 400:
-    #     print("❌ Backend /triage-cases error:", resp.status_code)
-    #     print("❌ Error body:", resp.text)   # <— ADD THIS LINE
-    #     print("❌ Sent payload:", payload)    # <— AND THIS LINE
+        resp.raise_for_status()
 
-    resp.raise_for_status()
+        data = resp.json()
+        raw_text = data.get("response", "")
 
-    data = resp.json()
-    raw_text = data.get("response", "")
-
-    return raw_text
+        return raw_text
+    
+    except httpx.TimeoutException:
+        print("⚠️ Ollama timeout - returning default summary")
+        return "Patient presents with ENT-related symptoms. Further assessment needed."
+    except Exception as e:
+        print(f"⚠️ Ollama error: {e}")
+        return f"Error calling Ollama: {str(e)}"

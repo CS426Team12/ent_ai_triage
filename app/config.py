@@ -18,7 +18,7 @@ class Settings(BaseSettings):
 
 
     # Redis (AI should use DB 1)
-    REDIS_URL: str = "redis://localhost:6379/1"
+    AI_REDIS_URL: str = "redis://localhost:6379/1"
 
     # Ollama EC2
     OLLAMA_BASE_URL: str
