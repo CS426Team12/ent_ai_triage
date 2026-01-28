@@ -26,6 +26,32 @@ async def get_service_token():
     return SERVICE_TOKEN
 
 
+async def get_patient_history(patient_id: str) -> dict:
+    """Fetch patient medical history from backend."""
+    try:
+        token = await get_service_token()
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+        
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                f"{settings.BACKEND_BASE_URL}/patients/{patient_id}",
+                headers=headers,
+            )
+            resp.raise_for_status()
+            return resp.json()
+    except Exception as e:
+        print(f"⚠️ Failed to fetch patient history: {e}")
+        return {
+            "medicalHistory": [],
+            "allergies": [],
+            "previousVisits": []
+        }
+
+
+
 async def save_triage_to_backend(patient_id, transcript, summary, urgency, confidence):
     token = await get_service_token()
 
