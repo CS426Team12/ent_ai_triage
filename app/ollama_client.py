@@ -275,3 +275,117 @@ def extract_flags_from_transcript(transcript: str, urgency: str) -> list:
             flags.append({"tag": "SEVERITY", "keyword": "mild symptoms"})
     
     return flags
+
+
+# RED FLAG KEYWORDS - Auto-escalate to URGENT
+CRITICAL_RED_FLAGS = [
+    "breathing difficulty", "difficulty breathing", "shortness of breath", "breath shortness",
+    "stridor", "wheezing", "wheeze", "respiratory distress",
+    "airway", "choking", "asphyxia",
+    "severe throat pain", "severe pain", "unbearable pain", "excruciating",
+    "dysphagia", "difficulty swallowing", "cannot swallow",
+    "severe dizziness", "vertigo", "fainting", "syncope",
+    "sudden hearing loss", "hearing loss", "deafness",
+    "fever", "high temperature", "chills",
+    "immunocompromised", "immunosuppressed", "AIDS", "HIV",
+    "spreading infection", "infected", "sepsis",
+    "facial swelling", "throat swelling", "edema",
+    "severe bleeding", "hemorrhage", "blood",
+]
+
+# MEDICAL HISTORY RISK FLAGS - Escalate one level
+MEDICAL_RISK_FACTORS = {
+    "immunocompromised": ["HIV", "AIDS", "cancer", "immunosuppressant", "leukemia", "lymphoma"],
+    "diabetes": ["diabetes", "diabetic"],
+    "lung_disease": ["asthma", "COPD", "emphysema", "chronic bronchitis"],
+    "heart_disease": ["heart", "cardiac", "arrhythmia", "hypertension"],
+    "previous_complications": ["previous ENT surgery", "recurrent", "chronic infection"],
+}
+
+
+def validate_urgency_classification(
+    transcript: str,
+    llm_urgency: str,
+    flags: list,
+    patient_history: dict = None,
+    ml_confidence: float = 0.0
+) -> tuple:
+    """
+    Secondary validation layer to ensure urgency classification is correct.
+    
+    Returns:
+        tuple: (adjusted_urgency, confidence_level)
+    """
+    
+    transcript_lower = transcript.lower()
+    
+    # Check for critical red flags - auto-escalate to URGENT
+    for red_flag in CRITICAL_RED_FLAGS:
+        if red_flag.lower() in transcript_lower:
+            print(f"⚠️ CRITICAL RED FLAG DETECTED: {red_flag} → Escalating to URGENT")
+            return ("urgent", "high")
+    
+    # Check for red flag tags in the flags list
+    has_red_flag = any(f.get("tag") == "RED_FLAG" for f in flags)
+    
+    # Check patient medical history for risk factors
+    patient_history = patient_history or {}
+    medical_history = (patient_history.get("medicalHistory") or [])
+    medical_history_str = " ".join(medical_history).lower()
+    
+    is_immunocompromised = any(
+        risk in medical_history_str 
+        for risk in MEDICAL_RISK_FACTORS["immunocompromised"]
+    )
+    is_high_risk = any(
+        risk in medical_history_str 
+        for risks in MEDICAL_RISK_FACTORS.values() 
+        for risk in risks
+    )
+    
+    # Decision logic for urgency adjustment
+    adjusted_urgency = llm_urgency
+    confidence = "high"
+    
+    # Rule 1: Red flags present = URGENT
+    if has_red_flag or "red" in transcript_lower:
+        adjusted_urgency = "urgent"
+        confidence = "high"
+    
+    # Rule 2: Immunocompromised + any symptoms = at least SEMI-URGENT
+    elif is_immunocompromised:
+        if adjusted_urgency == "routine":
+            adjusted_urgency = "semi-urgent"
+            confidence = "medium"
+            print(f"⚠️ Immunocompromised patient with symptoms → Escalating to SEMI-URGENT")
+        elif adjusted_urgency == "semi-urgent":
+            confidence = "high"
+    
+    # Rule 3: High-risk patient + worsening symptoms = at least SEMI-URGENT
+    elif is_high_risk:
+        worsening = any(
+            word in transcript_lower 
+            for word in ["worsening", "worse", "getting worse", "deteriorating", "rapid"]
+        )
+        if worsening and adjusted_urgency == "routine":
+            adjusted_urgency = "semi-urgent"
+            confidence = "medium"
+            print(f"⚠️ High-risk patient with worsening symptoms → Escalating to SEMI-URGENT")
+    
+    # Rule 4: Low ML confidence on serious classification = increase to high-confidence
+    if ml_confidence < 0.6 and adjusted_urgency in ["semi-urgent", "urgent"]:
+        confidence = "medium"
+    
+    # Rule 5: Multiple severe indicators = high confidence
+    severe_indicators = sum([
+        has_red_flag,
+        is_immunocompromised,
+        is_high_risk,
+        "severe" in transcript_lower,
+        "worsening" in transcript_lower,
+    ])
+    if severe_indicators >= 2:
+        confidence = "high"
+    
+    print(f"✓ Urgency validation: {llm_urgency} → {adjusted_urgency} (confidence: {confidence})")
+    return (adjusted_urgency, confidence)

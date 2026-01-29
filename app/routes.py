@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from app.ollama_client import call_ollama
+from app.ollama_client import call_ollama, validate_urgency_classification
 from app.backend_client import save_triage_to_backend, get_patient_history
 from app.ml_client import predict_urgency
 
@@ -24,6 +24,7 @@ class TriageResponse(BaseModel):
     flags: list[Flag] = []  # Tagged keywords explaining the decision
     reasoning: str = ""
     ml_confidence: float = 0.0  # Secondary ML validation
+    urgency_confidence: str = "high"  # high/medium/low confidence in classification
 
 
 @router.post("/triage", response_model=TriageResponse)
@@ -50,7 +51,16 @@ async def triage(payload: TriageRequest):
     ml_prediction = predict_urgency(payload.transcript)
     ml_confidence = ml_prediction.get("confidence", 0.0)
     
-    print(f"📋 LLM Urgency: {urgency}")
+    # Validate and potentially adjust urgency based on flags & medical history
+    urgency, urgency_confidence = validate_urgency_classification(
+        transcript=payload.transcript,
+        llm_urgency=urgency,
+        flags=flags_data,
+        patient_history=patient_history,
+        ml_confidence=ml_confidence
+    )
+    
+    print(f"📋 LLM Urgency: {urgency} (Confidence: {urgency_confidence})")
     print(f"🚩 Flags detected: {len(flags)}")
     print(f"🤖 ML Confidence: {ml_confidence:.2%}")
     
@@ -73,5 +83,6 @@ async def triage(payload: TriageRequest):
         "findings": findings,
         "flags": flags,
         "reasoning": reasoning,
-        "ml_confidence": ml_confidence
+        "ml_confidence": ml_confidence,
+        "urgency_confidence": urgency_confidence
     }
