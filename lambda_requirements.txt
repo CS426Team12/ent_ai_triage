@@ -1,0 +1,17 @@
+fastapi==0.128.0
+uvicorn==0.40.0
+httpx==0.27.0
+sqlmodel==0.0.31
+psycopg2-binary==2.9.11
+pydantic==2.8.2
+pydantic-settings==2.6.1
+joblib==1.4.2
+scikit-learn==1.5.1
+pandas==2.2.2
+
+# AWS Lambda specific
+boto3==1.34.3
+aws-lambda-powertools==2.26.0
+
+# For async support in Lambda
+asyncio==3.4.3
