@@ -206,5 +206,6 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+# Finetuned/saved model artifacts (large); training data is kept in repo (~2MB)
 modelling/model/
-modelling/data/
+# modelling/data/ — not ignored; training_data.jsonl and source datasets are in repo

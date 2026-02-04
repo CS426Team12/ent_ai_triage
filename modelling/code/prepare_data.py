@@ -70,24 +70,38 @@ def create_training_example(row: dict, data_type: str = "generic") -> Dict[str, 
         if not disease or disease.lower() in ["unknown", "nan", ""]:
             return None
         
-        # Create symptom description from numeric values
+        # Create symptom description and severity counts from numeric values
         symptoms = []
+        severe_count = 0
+        fever_val = None
         for col in symptom_cols:
             val = row.get(col)
             if pd.notna(val):
                 try:
-                    severity = "mild" if val < 3 else "moderate" if val < 6 else "severe"
-                    symptoms.append(f"{col.lower()}: {severity} ({val:.1f})")
-                except:
+                    v = float(val)
+                    severe_count += 1 if v >= 6 else 0
+                    if col.lower() == "fever":
+                        fever_val = v
+                    severity = "mild" if v < 3 else "moderate" if v < 6 else "severe"
+                    symptoms.append(f"{col.lower()}: {severity} ({v:.1f})")
+                except (TypeError, ValueError):
                     pass
         
         if not symptoms:
             return None
         
+        # Urgency from fever + severe count (align with fix_training_data_urgency.py)
+        if fever_val is not None and fever_val >= 104.0 and severe_count >= 4:
+            urgency = "urgent"
+        elif fever_val is not None and (fever_val >= 103.0 and severe_count >= 3 or fever_val >= 102.0 and severe_count >= 2):
+            urgency = "semi-urgent"
+        else:
+            urgency = "routine"
+        
         return {
-            "instruction": "You are an ENT triage expert. Analyze the patient's symptom profile and predict the likely disease/condition.",
+            "instruction": "You are an ENT triage expert. Classify the urgency of this patient as routine, semi-urgent, or urgent based on their symptoms.",
             "input": "Patient presents with:\n" + "\n".join(symptoms),
-            "output": f"DIAGNOSIS: {disease}\nURGENCY: routine"
+            "output": urgency
         }
     
     # Diagnostic errors: Referral appropriateness
