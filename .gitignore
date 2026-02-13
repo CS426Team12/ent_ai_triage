@@ -209,3 +209,11 @@ __marimo__/
 # Finetuned/saved model artifacts (large); training data is kept in repo (~2MB)
 modelling/model/
 # modelling/data/ — not ignored; training_data.jsonl and source datasets are in repo
+
+# macOS
+.DS_Store
+
+# Local / logs (do not push)
+finetuning.log
+.env.local
+.env.*.local
