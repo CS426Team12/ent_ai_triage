@@ -26,8 +26,18 @@ async def get_service_token():
     return SERVICE_TOKEN
 
 
+def _is_known_patient(patient_id: str) -> bool:
+    """True if we have a real patient ID (not placeholder from Lex/Twilio without verification)."""
+    if not patient_id or not str(patient_id).strip():
+        return False
+    v = str(patient_id).lower()
+    return v not in ("unknown", "null", "none", "")
+
+
 async def get_patient_history(patient_id: str) -> dict:
-    """Fetch patient medical history from backend."""
+    """Fetch patient medical history from backend. Returns empty dict when patient_id is unknown/placeholder."""
+    if not _is_known_patient(patient_id):
+        return {"medicalHistory": [], "allergies": [], "previousVisits": []}
     try:
         token = await get_service_token()
         headers = {
