@@ -8,3 +8,7 @@ pydantic-settings
 joblib
 scikit-learn
 pandas
+gunicorn
+twilio
+pytest
+pytest-asyncio

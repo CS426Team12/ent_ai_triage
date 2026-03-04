@@ -1,3 +1,6 @@
+import logging
+from datetime import datetime, timezone
+
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
@@ -6,6 +9,7 @@ from app.backend_client import save_triage_to_backend, get_patient_history
 from app.ml_client import predict_urgency
 
 router = APIRouter(prefix="/ai")
+logger = logging.getLogger(__name__)
 
 # Placeholder when no patient verification (e.g. Lex/Twilio intake without lookup)
 UNKNOWN_PATIENT_ID = "unknown"
@@ -35,6 +39,7 @@ class TriageResponse(BaseModel):
     reasoning: str = ""
     ml_confidence: float = 0.0  # Secondary ML validation
     urgency_confidence: str = "high"  # high/medium/low confidence in classification
+    received_at: str = ""  # ISO timestamp when call was received (confirms call went through)
 
 
 def _build_transcript_from_slots(slots: dict) -> str:
@@ -48,15 +53,29 @@ def _build_transcript_from_slots(slots: dict) -> str:
     return "Patient reports: " + "; ".join(parts) if parts else ""
 
 
+def _transcript_preview(text: str, max_len: int = 200) -> str:
+    """Truncate transcript for logging; avoid huge logs."""
+    if not text or not text.strip():
+        return "(empty)"
+    s = text.strip()
+    return s[:max_len] + "..." if len(s) > max_len else s
+
+
 @router.post("/triage", response_model=TriageResponse)
 async def triage(payload: TriageRequest):
+    received_at = datetime.now(timezone.utc).isoformat()
     patient_id = payload.patient_id or UNKNOWN_PATIENT_ID
+    preview = _transcript_preview(payload.transcript)
+    logger.info(
+        f"TRIAGE CALL RECEIVED | patient_id={patient_id} | transcript_len={len(payload.transcript)} | "
+        f"transcript_preview=\"{preview}\" | received_at={received_at}"
+    )
 
     # Fetch patient history only when we have a real patient ID (skip for Lex/Twilio without verification)
     patient_history = {}
     if patient_id.lower() not in ("unknown", "null", ""):
         patient_history = await get_patient_history(patient_id)
-        print(f"✓ Fetched patient history for {patient_id}")
+        logger.info(f"Fetched patient history for {patient_id}")
     
     # Call LLM with transcript + patient history
     # LLM now does BOTH summary generation AND urgency classification
@@ -84,9 +103,7 @@ async def triage(payload: TriageRequest):
         ml_confidence=ml_confidence
     )
     
-    print(f"📋 LLM Urgency: {urgency} (Confidence: {urgency_confidence})")
-    print(f"🚩 Flags detected: {len(flags)}")
-    print(f"🤖 ML Confidence: {ml_confidence:.2%}")
+    logger.info(f"LLM result | urgency={urgency} | confidence={urgency_confidence} | flags={len(flags)} | ml_confidence={ml_confidence:.2%}")
     
     # Save triage result to backend (skip or use placeholder when patient unknown)
     try:
@@ -98,8 +115,10 @@ async def triage(payload: TriageRequest):
             confidence=ml_confidence,
         )
     except Exception as e:
-        print(f"⚠️ Failed to save to backend: {e}")
+        logger.warning(f"Failed to save to backend: {e}")
         # Continue anyway - still return the triage result
+
+    logger.info(f"TRIAGE COMPLETE | patient_id={patient_id} | urgency={urgency} | returned_at={datetime.now(timezone.utc).isoformat()}")
 
     return {
         "summary": summary,
@@ -108,7 +127,8 @@ async def triage(payload: TriageRequest):
         "flags": flags,
         "reasoning": reasoning,
         "ml_confidence": ml_confidence,
-        "urgency_confidence": urgency_confidence
+        "urgency_confidence": urgency_confidence,
+        "received_at": received_at,
     }
 
 
@@ -118,7 +138,9 @@ async def triage_from_slots(payload: TriageFromSlotsRequest):
     Accept Lex-style slots and build transcript for triage.
     Use when Lex/Twilio sends structured Q&A instead of full transcript.
     """
+    logger.info(f"TRIAGE FROM-SLOTS RECEIVED | patient_id={payload.patient_id} | slots={payload.slots}")
     transcript = _build_transcript_from_slots(payload.slots)
     if not transcript.strip():
         transcript = "Patient provided no symptom details."
+    logger.info(f"TRIAGE FROM-SLOTS | built transcript: \"{_transcript_preview(transcript)}\"")
     return await triage(TriageRequest(transcript=transcript, patient_id=payload.patient_id or UNKNOWN_PATIENT_ID))

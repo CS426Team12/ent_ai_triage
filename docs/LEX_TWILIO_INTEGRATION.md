@@ -32,9 +32,11 @@ This doc is for whoever is wiring Lex/Twilio call data into the AI triage servic
   "flags": [{"tag": "SYMPTOM", "keyword": "sore throat"}],
   "reasoning": "Mild symptoms, no red flags...",
   "ml_confidence": 0.92,
-  "urgency_confidence": "high"
+  "urgency_confidence": "high",
+  "received_at": "2026-02-28T01:30:00.123456+00:00"
 }
 ```
+- `received_at`: ISO timestamp when the call was received (confirms the call went through)
 
 ### 2. `POST /ai/triage/from-slots` (Lex slots)
 
