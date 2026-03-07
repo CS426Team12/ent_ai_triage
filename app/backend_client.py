@@ -87,6 +87,7 @@ def _map_ai_to_backend_payload(
     summary: str,
     urgency: str,
     confidence: float,
+    flags: list | None = None,
 ) -> dict:
     """
     Map AI triage output to backend TriageCaseCreate schema.
@@ -97,19 +98,28 @@ def _map_ai_to_backend_payload(
     - AISummary: str
     - AIUrgency: str (routine | semi-urgent | urgent)
     - AIConfidence: float
+    - flags: optional list of {tag, keyword} (JSONB)
     """
     valid_urgencies = {"routine", "semi-urgent", "urgent"}
     ai_urgency = (urgency or "").lower().strip()
     if ai_urgency not in valid_urgencies:
         ai_urgency = "routine"
 
-    return {
+    payload = {
         "patientID": str(patient_id),
         "transcript": transcript or "",
         "AISummary": summary or "",
         "AIUrgency": ai_urgency,
         "AIConfidence": confidence,
     }
+    if flags is not None:
+        # Convert to JSON-serializable list of dicts
+        flags_json = [
+            f.model_dump() if hasattr(f, "model_dump") else f
+            for f in (flags or [])
+        ]
+        payload["flags"] = flags_json
+    return payload
 
 
 async def save_triage_to_backend(
@@ -118,6 +128,7 @@ async def save_triage_to_backend(
     summary: str,
     urgency: str,
     confidence: float,
+    flags: list | None = None,
 ) -> tuple[bool, int | None, str]:
     """
     Send AI triage result to backend API.
@@ -149,6 +160,7 @@ async def save_triage_to_backend(
             summary=summary,
             urgency=urgency,
             confidence=confidence,
+            flags=flags,
         )
 
         headers = {

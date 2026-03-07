@@ -13,6 +13,8 @@ logger = logging.getLogger(__name__)
 
 # Placeholder when no patient verification (e.g. Lex/Twilio intake without lookup)
 UNKNOWN_PATIENT_ID = "unknown"
+# Fallback patient for backend save when Lex/Twilio sends "unknown" (demo/development)
+FALLBACK_PATIENT_ID = "92f082d6-aace-4855-a9d3-40b50a82b18f"
 
 
 class TriageRequest(BaseModel):
@@ -70,6 +72,9 @@ def _transcript_preview(text: str, max_len: int = 200) -> str:
 async def triage(payload: TriageRequest):
     received_at = datetime.now(timezone.utc).isoformat()
     patient_id = payload.patient_id or UNKNOWN_PATIENT_ID
+    # Use fallback when "unknown" so backend save works (demo/development)
+    if patient_id.lower() in ("unknown", "null", ""):
+        patient_id = FALLBACK_PATIENT_ID
     preview = _transcript_preview(payload.transcript)
     logger.info(
         f"TRIAGE CALL RECEIVED | patient_id={patient_id} | transcript_len={len(payload.transcript)} | "
@@ -118,6 +123,7 @@ async def triage(payload: TriageRequest):
             summary=summary,
             urgency=urgency,
             confidence=ml_confidence,
+            flags=flags_data,
         )
     except Exception as e:
         logger.warning(f"Failed to save to backend: {e}")
@@ -203,6 +209,7 @@ async def test_pipeline(payload: TestPipelineRequest | None = Body(default=None)
             summary=summary,
             urgency=urgency,
             confidence=ml_confidence,
+            flags=flags_data,
         )
     except Exception as e:
         logger.error("Step 4: Backend POST failed: %s", e, exc_info=True)
