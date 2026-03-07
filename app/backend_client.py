@@ -1,9 +1,14 @@
+import logging
+import uuid
 import httpx
 from app.config import settings
 
+logger = logging.getLogger(__name__)
 SERVICE_TOKEN = None
 
-async def get_service_token():
+
+async def get_service_token() -> str:
+    """Authenticate with backend via JWT login. Returns access token."""
     global SERVICE_TOKEN
 
     if SERVICE_TOKEN:
@@ -13,17 +18,22 @@ async def get_service_token():
         "email": settings.BACKEND_USERNAME,
         "password": settings.BACKEND_PASSWORD,
     }
+    logger.info("Authenticating with backend at %s/auth/login", settings.BACKEND_BASE_URL)
 
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{settings.BACKEND_BASE_URL}/auth/login",
-            json=login_payload
-        )
-        resp.raise_for_status()
-        data = resp.json()
-
-    SERVICE_TOKEN = data["access_token"]
-    return SERVICE_TOKEN
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{settings.BACKEND_BASE_URL}/auth/login",
+                json=login_payload,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        SERVICE_TOKEN = data["access_token"]
+        logger.info("Backend auth successful")
+        return SERVICE_TOKEN
+    except Exception as e:
+        logger.error("Backend auth failed: %s", e, exc_info=True)
+        raise
 
 
 def _is_known_patient(patient_id: str) -> bool:
@@ -32,6 +42,15 @@ def _is_known_patient(patient_id: str) -> bool:
         return False
     v = str(patient_id).lower()
     return v not in ("unknown", "null", "none", "")
+
+
+def _is_valid_uuid(value: str) -> bool:
+    """True if value is a valid UUID string."""
+    try:
+        uuid.UUID(str(value))
+        return True
+    except (ValueError, TypeError):
+        return False
 
 
 async def get_patient_history(patient_id: str) -> dict:
@@ -53,7 +72,7 @@ async def get_patient_history(patient_id: str) -> dict:
             resp.raise_for_status()
             return resp.json()
     except Exception as e:
-        print(f"⚠️ Failed to fetch patient history: {e}")
+        logger.warning("Failed to fetch patient history: %s", e)
         return {
             "medicalHistory": [],
             "allergies": [],
@@ -62,39 +81,113 @@ async def get_patient_history(patient_id: str) -> dict:
 
 
 
-async def save_triage_to_backend(patient_id, transcript, summary, urgency, confidence):
-    token = await get_service_token()
+def _map_ai_to_backend_payload(
+    patient_id: str,
+    transcript: str,
+    summary: str,
+    urgency: str,
+    confidence: float,
+) -> dict:
+    """
+    Map AI triage output to backend TriageCaseCreate schema.
 
-    # Enforce enum values
+    Backend expects:
+    - patientID: UUID
+    - transcript: str
+    - AISummary: str
+    - AIUrgency: str (routine | semi-urgent | urgent)
+    - AIConfidence: float
+    """
     valid_urgencies = {"routine", "semi-urgent", "urgent"}
-    if urgency not in valid_urgencies:
-        urgency = "routine"
+    ai_urgency = (urgency or "").lower().strip()
+    if ai_urgency not in valid_urgencies:
+        ai_urgency = "routine"
 
-    payload = {
-        "patientID": patient_id,
-        "transcript": transcript,
-        "AISummary": summary,
-        "AIUrgency": urgency,
-        "AIConfidence": confidence
-
+    return {
+        "patientID": str(patient_id),
+        "transcript": transcript or "",
+        "AISummary": summary or "",
+        "AIUrgency": ai_urgency,
+        "AIConfidence": confidence,
     }
 
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
 
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{settings.BACKEND_BASE_URL}/triage-cases/",
-            json=payload,
-            headers=headers,
+async def save_triage_to_backend(
+    patient_id: str,
+    transcript: str,
+    summary: str,
+    urgency: str,
+    confidence: float,
+) -> tuple[bool, int | None, str]:
+    """
+    Send AI triage result to backend API.
+
+    Returns (success, status_code, response_body).
+    - success=True, status_code=201, body="..." when saved
+    - success=False, status_code=None, body="skipped" when patient unknown/invalid
+    - Raises on HTTP/network error
+    """
+    if not _is_known_patient(patient_id):
+        logger.info(
+            "Skipping backend save: patient_id=%s (unknown/placeholder); backend requires valid patient UUID",
+            patient_id,
+        )
+        return False, None, "skipped (unknown patient)"
+
+    if not _is_valid_uuid(patient_id):
+        logger.warning(
+            "Skipping backend save: patient_id=%s is not a valid UUID",
+            patient_id,
+        )
+        return False, None, "skipped (invalid UUID)"
+
+    try:
+        token = await get_service_token()
+        payload = _map_ai_to_backend_payload(
+            patient_id=patient_id,
+            transcript=transcript,
+            summary=summary,
+            urgency=urgency,
+            confidence=confidence,
         )
 
-    if resp.status_code >= 400:
-        print("❌ REAL BACKEND ERROR FROM /triage-cases/")
-        print("Status:", resp.status_code)
-        print("Body:", resp.text)
-        print("Sent payload:", payload)
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
 
-    resp.raise_for_status()
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                f"{settings.BACKEND_BASE_URL}/triage-cases/",
+                json=payload,
+                headers=headers,
+            )
+
+        if resp.status_code >= 400:
+            logger.error(
+                "Backend POST /triage-cases/ failed: status=%d, body=%s, payload=%s",
+                resp.status_code,
+                resp.text,
+                payload,
+            )
+            resp.raise_for_status()
+
+        logger.info(
+            "Triage result saved to backend: patient_id=%s, urgency=%s",
+            patient_id,
+            payload.get("AIUrgency"),
+        )
+        return True, resp.status_code, resp.text
+
+    except httpx.HTTPStatusError as e:
+        logger.error(
+            "Backend request failed: %s %s - %s",
+            e.request.method,
+            e.request.url,
+            e.response.text,
+            exc_info=True,
+        )
+        raise
+    except Exception as e:
+        logger.error("Failed to save triage to backend: %s", e, exc_info=True)
+        raise

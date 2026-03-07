@@ -12,17 +12,23 @@ class Settings(BaseSettings):
     DB_PORT: str = "5432"
     DB_NAME: str | None = None
 
-    BACKEND_BASE_URL: str
-    BACKEND_USERNAME: str
-    BACKEND_PASSWORD: str
+    BACKEND_BASE_URL: str = "http://localhost:8000"
+    # Service account for local auth (env vars override)
+    BACKEND_USERNAME: str = "ai@test.com"
+    BACKEND_PASSWORD: str = "password67"
 
 
     # Redis (AI should use DB 1)
     AI_REDIS_URL: str = "redis://localhost:6379/1"
 
-    # Ollama EC2
-    OLLAMA_BASE_URL: str
+    # Ollama (local/remote)
+    OLLAMA_BASE_URL: str = "http://localhost:11434"
     OLLAMA_MODEL_NAME: str = "phi3"
+
+    # Hosted LLM (Groq)
+    LLM_PROVIDER: str = "groq"  # "groq" or "ollama"
+    GROQ_API_KEY: str | None = None
+    GROQ_MODEL: str = "llama-3.1-8b-instant"
 
     # CORS
     ALLOWED_ORIGINS: list[str] = ["*"]

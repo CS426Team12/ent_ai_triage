@@ -101,6 +101,18 @@ def call_triage(transcript: str, patient_id: str = "unknown"):
     return r.json()
 ```
 
+## Twilio / Lex Transcript Format
+
+The transcript sent from Twilio/Lex often looks like:
+```
+aggravating_factors:Drinking alcohol. associated_symptoms:No. chief_complaint:I'm coughing. red_flags:No. relieving_factors:Physical activity. symptom_duration:1 month. symptom_progression:better symptom_severity:moderate
+```
+This is valid. Send it as the `transcript` string in `POST /ai/triage`:
+```json
+{"transcript": "aggravating_factors:Drinking alcohol. chief_complaint:I'm coughing. ...", "patient_id": "unknown"}
+```
+The AI will interpret it. No preprocessing required.
+
 ## Patient Verification
 
 - No verification yet: use `patient_id: "unknown"`. We skip patient history and still return triage.

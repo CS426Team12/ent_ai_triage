@@ -66,12 +66,67 @@ KEYWORD_DICTIONARIES = {
 }
 
 
+def _build_prompt(transcript: str, patient_history: dict) -> tuple[str, str]:
+    """Build system and user prompts for triage. Returns (system_prompt, user_prompt)."""
+    medical_history = ", ".join(patient_history.get("medicalHistory", [])) or "None documented"
+    previous_visits = ", ".join(patient_history.get("previousVisits", [])) or "None documented"
+    allergies = ", ".join(patient_history.get("allergies", [])) or "None documented"
+    user_prompt = (
+        TRIAGE_USER_PROMPT_TEMPLATE
+        .replace("<<TRANSCRIPT>>", transcript)
+        .replace("<<PATIENT_HISTORY>>", medical_history)
+        .replace("<<PREVIOUS_VISITS>>", previous_visits)
+        .replace("<<ALLERGIES>>", allergies)
+    )
+    return TRIAGE_SYSTEM_PROMPT.strip(), user_prompt
+
+
+async def _call_groq(transcript: str, patient_history: dict) -> dict:
+    """Call Groq API (OpenAI-compatible) for triage."""
+    system_prompt, user_prompt = _build_prompt(transcript, patient_history)
+    model = settings.GROQ_MODEL
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {settings.GROQ_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "temperature": 0.2,
+                },
+            )
+        resp.raise_for_status()
+        data = resp.json()
+        raw_text = data["choices"][0]["message"]["content"] or ""
+        result = parse_triage_response(raw_text)
+        if not result["flags"]:
+            result["flags"] = extract_flags_from_transcript(transcript, result["urgency"])
+        return result
+    except Exception as e:
+        print(f"⚠️ Groq API error: {e}")
+        return {
+            "summary": f"Error: {str(e)}",
+            "urgency": "routine",
+            "findings": [],
+            "flags": [],
+            "reasoning": "Error during processing",
+        }
+
+
 async def call_ollama(
     transcript: str,
     patient_history: dict = None
 ) -> dict:
     """
-    Call Ollama LLM for triage analysis.
+    Call LLM for triage analysis. Uses Groq if LLM_PROVIDER=groq and GROQ_API_KEY is set,
+    otherwise uses Ollama.
     
     Returns dict with keys:
     - summary: Clinical summary
@@ -80,60 +135,36 @@ async def call_ollama(
     - flags: Tagged keywords explaining why AI made this decision
     - reasoning: Explanation for urgency classification
     """
-    
     if patient_history is None:
         patient_history = {}
-    
-    # Format patient history for the prompt
-    medical_history = ", ".join(patient_history.get("medicalHistory", [])) or "None documented"
-    previous_visits = ", ".join(patient_history.get("previousVisits", [])) or "None documented"
-    allergies = ", ".join(patient_history.get("allergies", [])) or "None documented"
-    
-    # Build the prompt with patient history
-    user_prompt = (
-        TRIAGE_USER_PROMPT_TEMPLATE
-        .replace("<<TRANSCRIPT>>", transcript)
-        .replace("<<PATIENT_HISTORY>>", medical_history)
-        .replace("<<PREVIOUS_VISITS>>", previous_visits)
-        .replace("<<ALLERGIES>>", allergies)
-    )
-    
-    prompt = (
-        TRIAGE_SYSTEM_PROMPT.strip() +
-        "\n\n" +
-        user_prompt
-    )
 
+    # Use Groq if configured
+    if getattr(settings, "LLM_PROVIDER", "ollama") == "groq" and getattr(settings, "GROQ_API_KEY", None):
+        return await _call_groq(transcript, patient_history)
+
+    # Ollama path
+    system_prompt, user_prompt = _build_prompt(transcript, patient_history)
+    prompt = system_prompt + "\n\n" + user_prompt
     payload = {
         "model": settings.OLLAMA_MODEL_NAME,
         "prompt": prompt,
-        "stream": False
+        "stream": False,
     }
 
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
-            headers = {"Content-Type": "application/json"}
-
             resp = await client.post(
                 f"{settings.OLLAMA_BASE_URL}/api/generate",
                 json=payload,
-                headers=headers
+                headers={"Content-Type": "application/json"},
             )
-
         resp.raise_for_status()
-
         data = resp.json()
         raw_text = data.get("response", "")
-
-        # Parse the structured response
         result = parse_triage_response(raw_text)
-        
-        # If flags are empty, extract them automatically from transcript
         if not result["flags"]:
             result["flags"] = extract_flags_from_transcript(transcript, result["urgency"])
-        
         return result
-    
     except httpx.TimeoutException:
         print("⚠️ Ollama timeout - returning default response")
         return {
@@ -141,7 +172,7 @@ async def call_ollama(
             "urgency": "routine",
             "findings": [],
             "flags": [],
-            "reasoning": "Default due to timeout"
+            "reasoning": "Default due to timeout",
         }
     except Exception as e:
         print(f"⚠️ Ollama error: {e}")
@@ -150,7 +181,7 @@ async def call_ollama(
             "urgency": "routine",
             "findings": [],
             "flags": [],
-            "reasoning": "Error during processing"
+            "reasoning": "Error during processing",
         }
 
 

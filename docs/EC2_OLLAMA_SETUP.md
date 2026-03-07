@@ -1,18 +1,18 @@
 # Ollama + Qwen on EC2 Setup
 
-## Problem: Disk Full
+## ⚠️ Disk Space Required
 
-The EC2 instance has a 6.8GB root volume that is full. Ollama + qwen2.5:0.5b needs ~2–3GB free.
+The EC2 instance has a **6.8GB** root volume. Ollama + qwen2.5:0.5b needs **~5GB free**. You **must expand the EBS volume** before installing.
 
 ## Step 1: Expand EBS Volume (AWS Console)
 
-1. AWS Console → EC2 → Volumes
+1. AWS Console → **EC2** → **Volumes**
 2. Select the volume attached to your instance
-3. Actions → Modify volume
-4. Increase size (e.g., to **20GB** or **30GB**)
-5. Modify
+3. **Actions** → **Modify volume**
+4. Increase size to **20GB** or **30GB** (minimum 20GB recommended)
+5. Click **Modify**
 
-Wait 1–2 minutes for the volume to finish modifying.
+Wait 1–2 minutes for the volume to finish modifying (status: optimizing → completed).
 
 ## Step 2: Resize Partition on EC2
 

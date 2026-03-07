@@ -1,7 +1,7 @@
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Body
 from pydantic import BaseModel, Field
 
 from app.ollama_client import call_ollama, validate_urgency_classification
@@ -18,6 +18,11 @@ UNKNOWN_PATIENT_ID = "unknown"
 class TriageRequest(BaseModel):
     transcript: str
     patient_id: str = Field(default=UNKNOWN_PATIENT_ID, description="Optional; use 'unknown' when no verification yet")
+
+
+class TestPipelineRequest(BaseModel):
+    """Optional patient_id for full E2E test (backend requires valid UUID). Default: unknown."""
+    patient_id: str = Field(default=UNKNOWN_PATIENT_ID)
 
 
 class TriageFromSlotsRequest(BaseModel):
@@ -129,6 +134,95 @@ async def triage(payload: TriageRequest):
         "ml_confidence": ml_confidence,
         "urgency_confidence": urgency_confidence,
         "received_at": received_at,
+    }
+
+
+# Mock transcript simulating Twilio/Lex call (Step 1)
+MOCK_TWILIO_TRANSCRIPT = """Caller: I've had severe ear pain for the past three days and now I have dizziness and some hearing loss.
+Agent: Are you experiencing fever?
+Caller: Yes, around 101°F."""
+
+
+@router.post("/test-pipeline")
+async def test_pipeline(payload: TestPipelineRequest | None = Body(default=None)):
+    """
+    Local test simulation: Twilio transcript → AI triage → backend API → database.
+
+    Simulates the full production pipeline without a real Twilio call.
+    For backend save to succeed, pass a valid patient UUID in patient_id.
+    """
+    patient_id = (payload.patient_id if payload else UNKNOWN_PATIENT_ID) or UNKNOWN_PATIENT_ID
+    transcript = MOCK_TWILIO_TRANSCRIPT
+
+    logger.info("Step 1: Simulated Twilio transcript received")
+
+    # Step 2: Run existing triage pipeline (same logic as /triage)
+    received_at = datetime.now(timezone.utc).isoformat()
+
+    patient_history = {}
+    if patient_id.lower() not in ("unknown", "null", ""):
+        patient_history = await get_patient_history(patient_id)
+
+    llm_result = await call_ollama(transcript, patient_history)
+    summary = llm_result.get("summary", "")
+    urgency = llm_result.get("urgency", "routine")
+    findings = llm_result.get("findings", [])
+    flags_data = llm_result.get("flags", [])
+    reasoning = llm_result.get("reasoning", "")
+    flags = [Flag(**f) for f in flags_data]
+    ml_prediction = predict_urgency(transcript)
+    ml_confidence = ml_prediction.get("confidence", 0.0)
+    urgency, urgency_confidence = validate_urgency_classification(
+        transcript=transcript,
+        llm_urgency=urgency,
+        flags=flags_data,
+        patient_history=patient_history,
+        ml_confidence=ml_confidence,
+    )
+
+    logger.info("Step 2: AI triage generated")
+
+    triage_result = {
+        "summary": summary,
+        "urgency_level": urgency,
+        "confidence_score": ml_confidence,
+        "flagged_keywords": [f.get("keyword", f.get("tag", str(f))) for f in flags_data] if flags_data else [f.keyword for f in flags],
+        "transcript": transcript,
+        "call_id": "test-call-123",
+        "timestamp": received_at,
+        "findings": findings,
+        "reasoning": reasoning,
+        "urgency_confidence": urgency_confidence,
+    }
+
+    # Step 3 & 4: Authenticate and send to backend
+    try:
+        backend_saved, status_code, response_body = await save_triage_to_backend(
+            patient_id=patient_id,
+            transcript=transcript,
+            summary=summary,
+            urgency=urgency,
+            confidence=ml_confidence,
+        )
+    except Exception as e:
+        logger.error("Step 4: Backend POST failed: %s", e, exc_info=True)
+        return {
+            "triage_result": triage_result,
+            "backend_saved": False,
+            "backend_status": "error",
+            "backend_response": str(e),
+            "message": "Triage generated but backend save failed. See logs.",
+        }
+
+    logger.info("Step 4: Triage result sent to backend API")
+    logger.info("Step 5: Backend response: %s", f"{status_code} Created" if status_code == 201 else f"{status_code} {response_body[:200] if response_body else ''}")
+
+    return {
+        "triage_result": triage_result,
+        "backend_saved": backend_saved,
+        "backend_status": f"{status_code} Created" if status_code == 201 else (f"{status_code}" if status_code else "skipped"),
+        "backend_response_body": response_body[:500] if response_body else None,
+        "message": "Case saved successfully" if backend_saved else "Triage generated; backend save skipped (unknown/invalid patient_id). Use valid patient UUID for full E2E.",
     }
 
 
