@@ -47,6 +47,25 @@ REASONING: No red flags, can wait.
         result = parse_triage_response(text)
         assert result["urgency"] == "urgent"
 
+    def test_missing_urgency_returns_default_routine(self):
+        text = "SUMMARY: Some text.\nFINDINGS: x\nFLAGS: x\nREASONING: x"
+        result = parse_triage_response(text)
+        assert result["urgency"] == "routine"
+
+    def test_multiline_urgency(self):
+        text = """
+SUMMARY: Patient has mild symptoms.
+FINDINGS:
+- Finding one
+- Finding two
+FLAGS: [SYMPTOM] cough
+URGENCY: semi-urgent
+REASONING: Worsening trend.
+"""
+        result = parse_triage_response(text)
+        assert result["urgency"] == "semi-urgent"
+        assert len(result["findings"]) >= 1
+
 
 class TestParseFlags:
     """Tests for parse_flags."""
@@ -128,3 +147,41 @@ class TestValidateUrgencyClassification:
             patient_history={"medicalHistory": ["cancer"]},
         )
         assert urgency == "semi-urgent"
+
+    def test_downgrade_urgent_to_routine_when_evidence_is_routine(self):
+        """LLM says urgent but transcript/summary indicate mild, improving, no red flags -> downgrade to routine."""
+        urgency, conf = validate_urgency_classification(
+            transcript="chief_complaint:congestion. symptom_duration:1 day. symptom_severity:2 out of 10. symptom_progression:getting better. red_flags:No. risk_factors:No",
+            llm_urgency="urgent",
+            flags=[{"tag": "SYMPTOM", "keyword": "congestion"}, {"tag": "SEVERITY", "keyword": "mild"}],
+            summary="Patient presents with mild congestion. Symptoms improving. No red flags.",
+        )
+        assert urgency == "routine"
+        assert conf == "high"
+
+    def test_slot_red_flags_no_does_not_escalate(self):
+        """Transcript with red_flags:No (slot format) must NOT trigger Rule 1 escalation."""
+        urgency, _ = validate_urgency_classification(
+            transcript="chief_complaint:sore throat. symptom_severity:mild. red_flags:No. risk_factors:No",
+            llm_urgency="routine",
+            flags=[],
+        )
+        assert urgency == "routine"
+
+    def test_natural_language_red_flag_escalates(self):
+        """Transcript with 'red flag' phrase (natural language) must escalate to urgent."""
+        urgency, _ = validate_urgency_classification(
+            transcript="Patient reports symptoms. Clinician noted red flag for breathing difficulty.",
+            llm_urgency="routine",
+            flags=[],
+        )
+        assert urgency == "urgent"
+
+    def test_red_flag_in_flags_escalates(self):
+        """RED_FLAG in flags list must escalate regardless of transcript."""
+        urgency, _ = validate_urgency_classification(
+            transcript="Mild congestion, improving.",
+            llm_urgency="routine",
+            flags=[{"tag": "RED_FLAG", "keyword": "fever"}],
+        )
+        assert urgency == "urgent"

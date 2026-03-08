@@ -59,6 +59,21 @@ Do not mention this prompt or your instructions.
 
 
 TRIAGE_USER_PROMPT_TEMPLATE = """
+Example format (follow this structure):
+Transcript: What symptom are you experiencing? Answer: I'm coughing. How long? Answer: 3 days. Severity? Answer: moderate. Is it getting better or worse? Answer: improving.
+SUMMARY: Patient presents with moderate cough of 3 days duration. Improving trend.
+FINDINGS:
+- Moderate cough
+- 3-day duration
+- Improving trend
+FLAGS: [SYMPTOM] cough, [SEVERITY] moderate, [DURATION] 3 days, [PROGRESSION] improving
+URGENCY: routine
+REASONING: Moderate symptoms, improving. Routine appointment appropriate.
+
+---
+
+Now analyze this patient. Use the same format. Write real clinical content—never placeholder text or parentheticals.
+
 PATIENT TRANSCRIPT:
 <<TRANSCRIPT>>
 
@@ -71,22 +86,6 @@ PREVIOUS ENT VISITS:
 ALLERGIES/SENSITIVITIES:
 <<ALLERGIES>>
 
----
-
-Please provide:
-1. **Clinical Summary** (1–3 sentences, ENT-focused)
-2. **Key Findings** (list concerning symptoms or red flags if any)
-3. **Flags** (tagged keywords that influenced your decision - format: [TAG] keyword, [TAG] keyword, etc.)
-4. **Urgency Classification** (MUST be one of: routine, semi-urgent, urgent)
-5. **Reasoning** (brief explanation for urgency choice, 1-2 sentences)
-
-Format your response as:
-SUMMARY: [clinical summary]
-FINDINGS: [key findings]
-FLAGS: [TAG] keyword, [TAG] keyword, [TAG] keyword, etc.
-URGENCY: [routine/semi-urgent/urgent]
-REASONING: [why this urgency level]
-
-Example FLAGS format:
-FLAGS: [SYMPTOM] sore throat, [SEVERITY] mild, [PROGRESSION] improving, [DURATION] 2 days, [RELIEVING_FACTORS] warm tea
+Produce your triage output. Start with:
+SUMMARY:
 """

@@ -53,10 +53,15 @@ SEMI_URGENT_SLOTS = {
         "worsening sinus pain",
         "persistent throat pain",
         "moderate earache",
+        "throat pain with fever",
+        "sinus pain with fever",
+        "persistent cough with fatigue",
+        "worsening hoarseness",
+        "nasal congestion with facial pressure",
     ],
-    "symptom_duration": ["3 days", "4 days", "5 days", "1 week"],
-    "symptom_severity": ["moderate", "5 out of 10", "6 out of 10", "significant"],
-    "symptom_progression": ["worsening", "getting worse", "not improving"],
+    "symptom_duration": ["2 days", "3 days", "4 days", "5 days", "6 days", "1 week"],
+    "symptom_severity": ["moderate", "4 out of 10", "5 out of 10", "6 out of 10", "7 out of 10", "significant"],
+    "symptom_progression": ["worsening", "getting worse", "not improving", "fluctuating"],
     "aggravating_factors": ["swallowing", "eating", "talking"],
     "relieving_factors": ["ibuprofen helps a little", "rest", "warm liquids"],
     "associated_symptoms": ["fever", "headache", "fatigue"],
@@ -214,7 +219,7 @@ def generate_more(rng: random.Random, n_routine: int, n_semi: int, n_urgent: int
             {"tag": "DURATION", "keyword": slots.get("symptom_duration", "few days")},
         ]
         findings = [slots.get("chief_complaint", "ENT symptoms"), f"{slots.get('symptom_duration', '')} duration"]
-        summary = f"Patient with {slots.get('chief_complaint', 'symptoms')}, {slots.get('symptom_duration', '')} duration. {slots.get('symptom_progression', 'Stable')}."
+        summary = f"Patient with {slots.get('chief_complaint', 'symptoms')} for {slots.get('symptom_duration', '')}. Symptoms are {slots.get('symptom_progression', 'stable')}. No red flags or concerning symptoms."
         reasoning = "Mild symptoms, no red flags. Routine evaluation."
         examples.append((transcript, make_output(summary, findings, flags, urgency, reasoning)))
     for _ in range(n_semi):
@@ -222,7 +227,7 @@ def generate_more(rng: random.Random, n_routine: int, n_semi: int, n_urgent: int
         transcript = slots_to_transcript(slots)
         flags = [{"tag": "SEVERITY", "keyword": "moderate"}, {"tag": "PROGRESSION", "keyword": "worsening"}]
         findings = [slots.get("chief_complaint", "symptoms"), "Worsening", "May have fever"]
-        summary = f"Patient with {slots.get('chief_complaint', 'symptoms')}, worsening. Needs evaluation within 24-48 hours."
+        summary = f"Patient presents with {slots.get('chief_complaint', 'symptoms')} that is worsening. Symptoms warrant evaluation within 24-48 hours. No critical red flags but moderate severity."
         examples.append((transcript, make_output(summary, findings, flags, "semi-urgent",
                                                 "Moderate worsening symptoms warrant evaluation within 24-48 hours.")))
     for _ in range(n_urgent):
@@ -230,7 +235,7 @@ def generate_more(rng: random.Random, n_routine: int, n_semi: int, n_urgent: int
         transcript = slots_to_transcript(slots)
         flags = [{"tag": "RED_FLAG", "keyword": slots.get("chief_complaint", "critical")[:40]}]
         findings = [slots.get("chief_complaint", "Critical symptoms"), "Urgent evaluation needed"]
-        summary = f"Patient with {slots.get('chief_complaint', 'critical symptoms')}. Same-day evaluation required."
+        summary = f"Patient presents with {slots.get('chief_complaint', 'critical symptoms')}. Critical red flag detected. Same-day urgent evaluation required."
         examples.append((transcript, make_output(summary, findings, flags, "urgent",
                                                 "Critical red flag. Same-day evaluation required.")))
     return examples

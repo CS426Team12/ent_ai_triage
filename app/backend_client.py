@@ -21,14 +21,17 @@ async def get_service_token() -> str:
     logger.info("Authenticating with backend at %s/auth/login", settings.BACKEND_BASE_URL)
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
                 f"{settings.BACKEND_BASE_URL}/auth/login",
                 json=login_payload,
             )
             resp.raise_for_status()
             data = resp.json()
-        SERVICE_TOKEN = data["access_token"]
+        tok = data.get("access_token")
+        if not tok:
+            raise ValueError(f"Backend login response missing 'access_token'; got keys: {list(data.keys())}")
+        SERVICE_TOKEN = tok
         logger.info("Backend auth successful")
         return SERVICE_TOKEN
     except Exception as e:
@@ -64,7 +67,7 @@ async def get_patient_history(patient_id: str) -> dict:
             "Content-Type": "application/json"
         }
         
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.get(
                 f"{settings.BACKEND_BASE_URL}/patients/{patient_id}",
                 headers=headers,
@@ -168,7 +171,7 @@ async def save_triage_to_backend(
             "Content-Type": "application/json",
         }
 
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
                 f"{settings.BACKEND_BASE_URL}/triage-cases/",
                 json=payload,

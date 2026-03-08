@@ -12,22 +12,15 @@ This system provides:
 2. **Medical History Integration** – Considers patient's medical background for context-aware decisions
 3. **Multi-Layer Urgency Validation** – Conservative escalation approach with critical red-flag detection
 4. **Transparent Reasoning** – Every classification includes flags and justification
-5. **AWS Integration** – Connect/Lex/Lambda pipeline for real-time patient call processing
 
 ## Architecture
 
 ```
-Patient Call (Phone)
+Patient Call / Transcript
     ↓
-AWS Connect (Call Routing)
-    ↓
-Lex Bot (NLU + Conversation)
-    ↓
-Lambda Function (Triage Caller)
-    ↓
-Your Triage API (FastAPI on EC2)
+Your Triage API (FastAPI)
     ├── LLM Analysis (Ollama)
-    ├── Medical History Lookup
+    ├── Medical History Lookup (optional)
     ├── Multi-Layer Validation
     └── Flag Extraction
     ↓
@@ -169,25 +162,6 @@ Triage flags are tagged with clinical meaning:
 
 ## Deployment
 
-### AWS Lambda
-
-Deploy the triage caller Lambda function:
-
-```bash
-# Option 1: Automated (recommended)
-export TRIAGE_API_URL=http://your-ec2-ip:8100
-python3 deploy_lambda.py
-
-# Option 2: Manual
-aws lambda create-function \
-  --function-name ent-ai-triage \
-  --runtime python3.12 \
-  --handler aws_lambda_handler.lambda_handler \
-  --zip-file fileb://lambda_package.zip
-```
-
-See `docs/AWS_CONNECT_LEX_GUIDE.md` for full Lex/Connect integration.
-
 ### EC2 Hosting
 
 Deploy your FastAPI backend to EC2:
@@ -206,9 +180,10 @@ See `docs/EC2_DEPLOYMENT_GUIDE.md` for detailed instructions.
 ### Environment Variables (`.env`)
 
 ```
-# Ollama LLM
-OLLAMA_BASE_URL=http://18.224.183.103:11434
-OLLAMA_MODEL_NAME=qwen2.5:0.5b
+# Ollama LLM (set OLLAMA_MODEL_NAME to your finetuned model, e.g. better-triage)
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL_NAME=better-triage
+TRUST_LLM_URGENCY=1
 
 # Backend API (for patient history)
 BACKEND_BASE_URL=http://localhost:8000
@@ -221,6 +196,12 @@ AI_REDIS_URL=redis://localhost:6379
 # API Port
 PORT=8100
 ```
+
+### Finetuned Model and Verification
+
+`OLLAMA_MODEL_NAME` selects which Ollama model handles triage. Set `OLLAMA_MODEL_NAME=better-triage` (or your model name) to use your finetuned model. To verify the model in use, run a triage request and check server logs for `[TRIAGE] model=better-triage`.
+
+`TRUST_LLM_URGENCY=1` disables urgency validation overrides so the finetuned model's classification is returned as-is.
 
 ### ML Model
 
@@ -254,9 +235,6 @@ ent_ai_triage/
 │   │       └── test_random_forest.py
 │   └── model/
 │       └── final_ent_triage_model.pkl
-├── aws_lambda_handler.py             # Lambda function
-├── deploy_lambda.py                  # Lambda deployment script
-├── deploy_lambda.sh                  # Lambda deployment (Bash)
 └── requirements.txt
 ```
 
@@ -353,7 +331,6 @@ Edit `validate_urgency_classification()` in `app/ollama_client.py`:
 ## Performance Considerations
 
 - **Ollama Timeout:** 120 seconds (configurable in `ollama_client.py`)
-- **Lambda Timeout:** 60 seconds (set in AWS Lambda configuration)
 - **ML Model Load:** ~500ms on first request, cached thereafter
 - **API Response Time:** 1-5 seconds typical (depends on LLM)
 
@@ -373,8 +350,7 @@ sudo journalctl -u ent-triage -f
 
 ## Team Responsibilities
 
-- **You:** Triage API backend (FastAPI), Lambda triage-caller, EC2 deployment
-- **Teammate:** Lex bot, Connect contact flow, patient data collection
+- **You:** Triage API backend (FastAPI), EC2 deployment
 
 ## Support & Documentation
 

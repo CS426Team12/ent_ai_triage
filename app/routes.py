@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 # Placeholder when no patient verification (e.g. Lex/Twilio intake without lookup)
 UNKNOWN_PATIENT_ID = "unknown"
 # Fallback patient for backend save when Lex/Twilio sends "unknown" (demo/development)
-FALLBACK_PATIENT_ID = "92f082d6-aace-4855-a9d3-40b50a82b18f"
+FALLBACK_PATIENT_ID = "cc95fc5b-7dfe-48ed-9772-979bfd0b1ecc"
 
 
 class TriageRequest(BaseModel):
@@ -104,13 +104,14 @@ async def triage(payload: TriageRequest):
     ml_prediction = predict_urgency(payload.transcript)
     ml_confidence = ml_prediction.get("confidence", 0.0)
     
-    # Validate and potentially adjust urgency based on flags & medical history
+    # Validate and potentially adjust urgency based on flags, summary, and medical history
     urgency, urgency_confidence = validate_urgency_classification(
         transcript=payload.transcript,
         llm_urgency=urgency,
         flags=flags_data,
         patient_history=patient_history,
-        ml_confidence=ml_confidence
+        ml_confidence=ml_confidence,
+        summary=summary,
     )
     
     logger.info(f"LLM result | urgency={urgency} | confidence={urgency_confidence} | flags={len(flags)} | ml_confidence={ml_confidence:.2%}")
@@ -158,6 +159,8 @@ async def test_pipeline(payload: TestPipelineRequest | None = Body(default=None)
     For backend save to succeed, pass a valid patient UUID in patient_id.
     """
     patient_id = (payload.patient_id if payload else UNKNOWN_PATIENT_ID) or UNKNOWN_PATIENT_ID
+    if patient_id.lower() in ("unknown", "null", ""):
+        patient_id = FALLBACK_PATIENT_ID
     transcript = MOCK_TWILIO_TRANSCRIPT
 
     logger.info("Step 1: Simulated Twilio transcript received")
@@ -184,6 +187,7 @@ async def test_pipeline(payload: TestPipelineRequest | None = Body(default=None)
         flags=flags_data,
         patient_history=patient_history,
         ml_confidence=ml_confidence,
+        summary=summary,
     )
 
     logger.info("Step 2: AI triage generated")

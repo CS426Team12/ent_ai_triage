@@ -23,10 +23,11 @@ class Settings(BaseSettings):
 
     # Ollama (local/remote)
     OLLAMA_BASE_URL: str = "http://localhost:11434"
-    OLLAMA_MODEL_NAME: str = "phi3"
+    OLLAMA_MODEL_NAME: str = "better-triage"
 
     # Hosted LLM (Groq)
-    LLM_PROVIDER: str = "groq"  # "groq" or "ollama"
+    LLM_PROVIDER: str = "ollama"  # "groq" or "ollama"
+    TRUST_LLM_URGENCY: bool = False  # When True, skip urgency validation and trust finetuned model
     GROQ_API_KEY: str | None = None
     GROQ_MODEL: str = "llama-3.1-8b-instant"
 

@@ -1,6 +1,27 @@
-import httpx
+import json
+import logging
+import os
 import re
+
+import httpx
+
 from app.config import settings
+
+logger = logging.getLogger(__name__)
+
+DEBUG_URGENCY = os.environ.get("DEBUG_URGENCY", "") == "1"
+TRACE_PATH = os.environ.get("URGENCY_TRACE_PATH", "urgency_trace.jsonl")
+
+
+def _trace(stage: str, data: dict) -> None:
+    """Append one JSONL line to trace file when DEBUG_URGENCY=1."""
+    if not DEBUG_URGENCY:
+        return
+    try:
+        with open(TRACE_PATH, "a") as f:
+            f.write(json.dumps({"stage": stage, **data}) + "\n")
+    except Exception:
+        pass
 from app.prompts import TRIAGE_SYSTEM_PROMPT, TRIAGE_USER_PROMPT_TEMPLATE
 
 
@@ -105,6 +126,7 @@ async def _call_groq(transcript: str, patient_history: dict) -> dict:
         resp.raise_for_status()
         data = resp.json()
         raw_text = data["choices"][0]["message"]["content"] or ""
+        logger.info("[TRIAGE] model=%s | llm_raw_output:\n%s", model, raw_text)
         result = parse_triage_response(raw_text)
         if not result["flags"]:
             result["flags"] = extract_flags_from_transcript(transcript, result["urgency"])
@@ -143,8 +165,20 @@ async def call_ollama(
         return await _call_groq(transcript, patient_history)
 
     # Ollama path
+    model = settings.OLLAMA_MODEL_NAME
+    logger.info("[TRIAGE] Calling finetuned Ollama model: %s at %s", model, settings.OLLAMA_BASE_URL)
     system_prompt, user_prompt = _build_prompt(transcript, patient_history)
     prompt = system_prompt + "\n\n" + user_prompt
+    # #region agent log
+    try:
+        import json as _json
+        import time as _time
+        _log_path = "/Users/joshuamatni/Downloads/ai_service/.cursor/debug-891cae.log"
+        with open(_log_path, "a") as _f:
+            _f.write(_json.dumps({"sessionId":"891cae","hypothesisId":"H1_H2_H4_H5","timestamp":int(_time.time()*1000),"location":"ollama_client.py:call_ollama","message":"Prompt structure before Ollama","data":{"prompt_len":len(prompt),"prompt_first_500":prompt[:500],"prompt_last_600":prompt[-600:],"has_SUMMARY_in_prompt":"SUMMARY:" in prompt,"transcript_in_last_800":transcript[:200] in prompt[-800:] if transcript else False,"transcript_len":len(transcript),"runId":"post-fix"}})+"\n")
+    except Exception:
+        pass
+    # #endregion
     payload = {
         "model": settings.OLLAMA_MODEL_NAME,
         "prompt": prompt,
@@ -161,7 +195,12 @@ async def call_ollama(
         resp.raise_for_status()
         data = resp.json()
         raw_text = data.get("response", "")
+        logger.info("[TRIAGE] model=%s | llm_raw_output:\n%s", model, raw_text)
         result = parse_triage_response(raw_text)
+        _trace("call_ollama", {
+            "llm_raw_preview": raw_text[:500] if raw_text else "",
+            "parsed_urgency": result.get("urgency"),
+        })
         if not result["flags"]:
             result["flags"] = extract_flags_from_transcript(transcript, result["urgency"])
         return result
@@ -230,7 +269,11 @@ def parse_triage_response(response_text: str) -> dict:
             urgency = urgency_match.group(1).lower()
             if urgency in ["routine", "semi-urgent", "urgent"]:
                 result["urgency"] = urgency
-        
+        _trace("parse_triage_response", {
+            "urgency_matched": bool(urgency_match),
+            "extracted_urgency": result["urgency"],
+        })
+
         # Extract REASONING
         reasoning_match = re.search(r'REASONING:\s*(.+?)(?=\n\n|$)', response_text, re.DOTALL | re.IGNORECASE)
         if reasoning_match:
@@ -339,21 +382,25 @@ def validate_urgency_classification(
     llm_urgency: str,
     flags: list,
     patient_history: dict = None,
-    ml_confidence: float = 0.0
+    ml_confidence: float = 0.0,
+    summary: str = "",
 ) -> tuple:
     """
     Secondary validation layer to ensure urgency classification is correct.
-    
+    Can escalate (e.g. red flags) or downgrade (e.g. LLM says urgent but evidence is routine).
+
     Returns:
         tuple: (adjusted_urgency, confidence_level)
     """
-    
+    if getattr(settings, "TRUST_LLM_URGENCY", False):
+        return (llm_urgency, "high")
     transcript_lower = transcript.lower()
+    summary_lower = (summary or "").lower()
     
     # Check for critical red flags - auto-escalate to URGENT
     for red_flag in CRITICAL_RED_FLAGS:
         if red_flag.lower() in transcript_lower:
-            print(f"⚠️ CRITICAL RED FLAG DETECTED: {red_flag} → Escalating to URGENT")
+            # print(f"⚠️ CRITICAL RED FLAG DETECTED: {red_flag} → Escalating to URGENT")
             return ("urgent", "high")
     
     # Check for red flag tags in the flags list
@@ -379,21 +426,32 @@ def validate_urgency_classification(
     confidence = "high"
     
     # Rule 1: Red flags present = URGENT
-    if has_red_flag or "red" in transcript_lower:
+    # Use "red flag" or "red-flag" only; do NOT use "red_flag" (matches slot "red_flags")
+    red_flag_in_transcript = "red flag" in transcript_lower or "red-flag" in transcript_lower
+    rule_fired = "none"
+    # Trust LLM when it says routine and evidence clearly supports mild+improving (e.g. ear infection with discharge, improving)
+    routine_indicators = (
+        ("mild" in transcript_lower or "mild" in summary_lower)
+        and ("improving" in transcript_lower or "improving" in summary_lower or "routine" in summary_lower)
+    )
+    if (has_red_flag or red_flag_in_transcript) and not (llm_urgency == "routine" and routine_indicators):
         adjusted_urgency = "urgent"
         confidence = "high"
-    
+        rule_fired = "1"
+
     # Rule 2: Immunocompromised + any symptoms = at least SEMI-URGENT
     elif is_immunocompromised:
+        rule_fired = "2"
         if adjusted_urgency == "routine":
             adjusted_urgency = "semi-urgent"
             confidence = "medium"
-            print(f"⚠️ Immunocompromised patient with symptoms → Escalating to SEMI-URGENT")
+            # print(f"⚠️ Immunocompromised patient with symptoms → Escalating to SEMI-URGENT")
         elif adjusted_urgency == "semi-urgent":
             confidence = "high"
-    
+
     # Rule 3: High-risk patient + worsening symptoms = at least SEMI-URGENT
     elif is_high_risk:
+        rule_fired = "3"
         worsening = any(
             word in transcript_lower 
             for word in ["worsening", "worse", "getting worse", "deteriorating", "rapid"]
@@ -401,9 +459,27 @@ def validate_urgency_classification(
         if worsening and adjusted_urgency == "routine":
             adjusted_urgency = "semi-urgent"
             confidence = "medium"
-            print(f"⚠️ High-risk patient with worsening symptoms → Escalating to SEMI-URGENT")
+            # print(f"⚠️ High-risk patient with worsening symptoms → Escalating to SEMI-URGENT")
+
+    # Rule 3b: Downgrade when LLM says urgent/semi-urgent but evidence clearly indicates routine
+    elif adjusted_urgency in ("urgent", "semi-urgent") and not has_red_flag and not is_immunocompromised:
+        routine_indicators = (
+            "mild" in transcript_lower or "mild" in summary_lower
+        ) and (
+            "improving" in transcript_lower or "improving" in summary_lower or
+            "getting better" in transcript_lower or "better" in summary_lower or
+            "stable" in transcript_lower or "stable" in summary_lower
+        ) and (
+            "no red flags" in transcript_lower or "no red flags" in summary_lower or
+            "red_flags:no" in transcript_lower or "red_flags:none" in transcript_lower
+        )
+        if routine_indicators:
+            rule_fired = "3b"
+            adjusted_urgency = "routine"
+            confidence = "high"
+            # print(f"✓ Downgrading {llm_urgency} → routine: transcript/summary indicate mild, improving, no red flags")
     
-    # Rule 4: Low ML confidence on serious classification = increase to high-confidence
+    # Rule 4: Low ML confidence on serious classification = reduce confidence
     if ml_confidence < 0.6 and adjusted_urgency in ["semi-urgent", "urgent"]:
         confidence = "medium"
     
@@ -418,5 +494,12 @@ def validate_urgency_classification(
     if severe_indicators >= 2:
         confidence = "high"
     
-    print(f"✓ Urgency validation: {llm_urgency} → {adjusted_urgency} (confidence: {confidence})")
+    _trace("validate_urgency_classification", {
+        "rule_fired": rule_fired,
+        "llm_urgency": llm_urgency,
+        "adjusted_urgency": adjusted_urgency,
+        "has_red_flag": has_red_flag,
+        "red_flag_in_transcript": red_flag_in_transcript,
+    })
+    # print(f"✓ Urgency validation: {llm_urgency} → {adjusted_urgency} (confidence: {confidence})")
     return (adjusted_urgency, confidence)
