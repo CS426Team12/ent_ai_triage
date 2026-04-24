@@ -14,6 +14,8 @@ class TestSettings:
         assert hasattr(s, "BACKEND_BASE_URL")
         assert hasattr(s, "OLLAMA_BASE_URL")
         assert hasattr(s, "OLLAMA_MODEL_NAME")
+        assert hasattr(s, "LLM_PROVIDER")
+        assert hasattr(s, "ENABLE_LLM_JUDGE")
 
     def test_allowed_origins_default(self):
         from app.config import settings

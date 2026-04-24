@@ -13,6 +13,7 @@ from app.routes import (
     Flag,
     TriageResponse,
     UNKNOWN_PATIENT_ID,
+    FALLBACK_PATIENT_ID,
 )
 
 
@@ -100,9 +101,10 @@ class TestTriageEndpoint:
     def _mock_dependencies(self):
         with (
             patch("app.routes.call_ollama", new_callable=AsyncMock) as m_ollama,
+            patch("app.routes.call_groq_judge", new_callable=AsyncMock) as m_judge,
             patch("app.routes.get_patient_history", new_callable=AsyncMock) as m_history,
             patch("app.routes.save_triage_to_backend", new_callable=AsyncMock) as m_save,
-            patch("app.routes.predict_urgency") as m_ml,
+            patch("app.routes.predict_rf_urgency") as m_rf,
             patch("app.routes.validate_urgency_classification") as m_validate,
         ):
             m_ollama.return_value = {
@@ -113,13 +115,15 @@ class TestTriageEndpoint:
                 "reasoning": "Mild case.",
             }
             m_history.return_value = {}
-            m_ml.return_value = {"urgency": "routine", "confidence": 0.9}
+            m_rf.return_value = {"urgency": "routine", "confidence": 0.9, "source": "random_forest"}
+            m_judge.return_value = {"urgency": "urgent", "reasoning": "judge"}
             m_validate.return_value = ("routine", "high")
             yield {
                 "ollama": m_ollama,
+                "judge": m_judge,
                 "history": m_history,
                 "save": m_save,
-                "ml": m_ml,
+                "rf": m_rf,
                 "validate": m_validate,
             }
 
@@ -139,11 +143,11 @@ class TestTriageEndpoint:
         assert "ml_confidence" in data
         assert "urgency_confidence" in data
 
-    def test_triage_unknown_patient_skips_history(
+    def test_triage_unknown_patient_maps_to_fallback_and_fetches_history(
         self, client: TestClient, _mock_dependencies
     ):
         client.post("/ai/triage", json={"transcript": "sore throat", "patient_id": "unknown"})
-        _mock_dependencies["history"].assert_not_called()
+        _mock_dependencies["history"].assert_called_once_with(FALLBACK_PATIENT_ID)
 
     def test_triage_valid_patient_calls_history(
         self, client: TestClient, _mock_dependencies
@@ -154,6 +158,15 @@ class TestTriageEndpoint:
         )
         _mock_dependencies["history"].assert_called_once_with("PAT123")
 
+    def test_triage_calls_judge_on_disagreement(self, client: TestClient, _mock_dependencies):
+        _mock_dependencies["rf"].return_value = {"urgency": "urgent", "confidence": 0.7, "source": "random_forest"}
+        _mock_dependencies["judge"].return_value = {"urgency": "urgent", "reasoning": "airway risk"}
+        _mock_dependencies["validate"].return_value = ("urgent", "high")
+        response = client.post("/ai/triage", json={"transcript": "sore throat", "patient_id": "unknown"})
+        assert response.status_code == 200
+        _mock_dependencies["judge"].assert_called_once()
+        assert response.json()["urgency"] == "urgent"
+
 
 class TestTriageFromSlotsEndpoint:
     """Tests for POST /ai/triage/from-slots (with mocks)."""
@@ -162,9 +175,10 @@ class TestTriageFromSlotsEndpoint:
     def _mock_dependencies(self):
         with (
             patch("app.routes.call_ollama", new_callable=AsyncMock) as m_ollama,
+            patch("app.routes.call_groq_judge", new_callable=AsyncMock) as m_judge,
             patch("app.routes.get_patient_history", new_callable=AsyncMock) as m_history,
             patch("app.routes.save_triage_to_backend", new_callable=AsyncMock) as m_save,
-            patch("app.routes.predict_urgency") as m_ml,
+            patch("app.routes.predict_rf_urgency") as m_rf,
             patch("app.routes.validate_urgency_classification") as m_validate,
         ):
             m_ollama.return_value = {
@@ -174,7 +188,8 @@ class TestTriageFromSlotsEndpoint:
                 "flags": [],
                 "reasoning": "Routine.",
             }
-            m_ml.return_value = {"urgency": "routine", "confidence": 0.85}
+            m_rf.return_value = {"urgency": "routine", "confidence": 0.85, "source": "random_forest"}
+            m_judge.return_value = {"urgency": "routine", "reasoning": "match"}
             m_validate.return_value = ("routine", "high")
             yield
 

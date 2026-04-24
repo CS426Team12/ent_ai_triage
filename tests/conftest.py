@@ -10,6 +10,8 @@ os.environ.setdefault("BACKEND_BASE_URL", "http://test-backend:8000")
 os.environ.setdefault("BACKEND_USERNAME", "test@test.com")
 os.environ.setdefault("BACKEND_PASSWORD", "testpass")
 os.environ.setdefault("OLLAMA_BASE_URL", "http://test-ollama:11434")
+# Override repo .env so urgency validation tests exercise rule logic, not trust-LLM mode
+os.environ["TRUST_LLM_URGENCY"] = "false"
 
 # Ensure app package is on path when running from project root
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

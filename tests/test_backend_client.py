@@ -61,7 +61,7 @@ async def test_save_triage_to_backend_normalizes_urgency():
 
             from app.backend_client import save_triage_to_backend
             await save_triage_to_backend(
-                patient_id="PAT1",
+                patient_id="cc95fc5b-7dfe-48ed-9772-979bfd0b1ecc",
                 transcript="test",
                 summary="s",
                 urgency="invalid-urgency",

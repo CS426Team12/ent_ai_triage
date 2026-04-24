@@ -4,9 +4,9 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Body
 from pydantic import BaseModel, Field
 
-from app.ollama_client import call_ollama, validate_urgency_classification
+from app.ollama_client import call_groq_judge, call_ollama, validate_urgency_classification
 from app.backend_client import save_triage_to_backend, get_patient_history
-from app.ml_client import predict_urgency
+from app.rf_client import predict_rf_urgency
 
 router = APIRouter(prefix="/ai")
 logger = logging.getLogger(__name__)
@@ -47,6 +47,22 @@ class TriageResponse(BaseModel):
     ml_confidence: float = 0.0  # Secondary ML validation
     urgency_confidence: str = "high"  # high/medium/low confidence in classification
     received_at: str = ""  # ISO timestamp when call was received (confirms call went through)
+
+
+def _resolve_consensus_urgency(
+    llm_result: dict,
+    rf_result: dict,
+    judge_result: dict | None = None,
+) -> tuple[str, str, dict | None]:
+    """Return final urgency, source label, and optional judge metadata."""
+    llm_urgency = llm_result.get("urgency", "routine")
+    rf_urgency = rf_result.get("urgency", "routine")
+    if llm_urgency == rf_urgency:
+        return llm_urgency, "consensus", None
+
+    if judge_result is None:
+        return llm_urgency, "llm_fallback", None
+    return judge_result.get("urgency", "urgent"), "judge", judge_result
 
 
 def _build_transcript_from_slots(slots: dict) -> str:
@@ -100,9 +116,22 @@ async def triage(payload: TriageRequest):
     # Convert flags to Flag objects for proper typing
     flags = [Flag(**flag) for flag in flags_data]
     
-    # Optional: Get ML model's confidence as secondary validation
-    ml_prediction = predict_urgency(payload.transcript)
-    ml_confidence = ml_prediction.get("confidence", 0.0)
+    rf_result = predict_rf_urgency(payload.transcript)
+    ml_confidence = rf_result.get("confidence", 0.0)
+
+    judge_result = None
+    if urgency != rf_result.get("urgency", "routine"):
+        judge_result = await call_groq_judge(
+            transcript=payload.transcript,
+            patient_history=patient_history,
+            ollama_result=llm_result,
+            rf_result=rf_result,
+        )
+    urgency, urgency_source, judge_result = _resolve_consensus_urgency(
+        llm_result=llm_result,
+        rf_result=rf_result,
+        judge_result=judge_result,
+    )
     
     # Validate and potentially adjust urgency based on flags, summary, and medical history
     urgency, urgency_confidence = validate_urgency_classification(
@@ -114,7 +143,15 @@ async def triage(payload: TriageRequest):
         summary=summary,
     )
     
-    logger.info(f"LLM result | urgency={urgency} | confidence={urgency_confidence} | flags={len(flags)} | ml_confidence={ml_confidence:.2%}")
+    logger.info(
+        "LLM/RF consensus | llm=%s rf=%s final=%s source=%s confidence=%s flags=%s",
+        llm_result.get("urgency", "routine"),
+        rf_result.get("urgency", "routine"),
+        urgency,
+        urgency_source,
+        urgency_confidence,
+        len(flags),
+    )
     
     # Save triage result to backend (skip or use placeholder when patient unknown)
     try:
@@ -137,7 +174,7 @@ async def triage(payload: TriageRequest):
         "urgency": urgency,
         "findings": findings,
         "flags": flags,
-        "reasoning": reasoning,
+        "reasoning": reasoning if judge_result is None else judge_result.get("reasoning", reasoning),
         "ml_confidence": ml_confidence,
         "urgency_confidence": urgency_confidence,
         "received_at": received_at,
@@ -179,8 +216,21 @@ async def test_pipeline(payload: TestPipelineRequest | None = Body(default=None)
     flags_data = llm_result.get("flags", [])
     reasoning = llm_result.get("reasoning", "")
     flags = [Flag(**f) for f in flags_data]
-    ml_prediction = predict_urgency(transcript)
-    ml_confidence = ml_prediction.get("confidence", 0.0)
+    rf_result = predict_rf_urgency(transcript)
+    ml_confidence = rf_result.get("confidence", 0.0)
+    judge_result = None
+    if urgency != rf_result.get("urgency", "routine"):
+        judge_result = await call_groq_judge(
+            transcript=transcript,
+            patient_history=patient_history,
+            ollama_result=llm_result,
+            rf_result=rf_result,
+        )
+    urgency, urgency_source, judge_result = _resolve_consensus_urgency(
+        llm_result=llm_result,
+        rf_result=rf_result,
+        judge_result=judge_result,
+    )
     urgency, urgency_confidence = validate_urgency_classification(
         transcript=transcript,
         llm_urgency=urgency,
@@ -201,8 +251,9 @@ async def test_pipeline(payload: TestPipelineRequest | None = Body(default=None)
         "call_id": "test-call-123",
         "timestamp": received_at,
         "findings": findings,
-        "reasoning": reasoning,
+        "reasoning": reasoning if judge_result is None else judge_result.get("reasoning", reasoning),
         "urgency_confidence": urgency_confidence,
+        "urgency_source": urgency_source,
     }
 
     # Step 3 & 4: Authenticate and send to backend

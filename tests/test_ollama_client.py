@@ -4,6 +4,7 @@ extract_flags_from_transcript, validate_urgency_classification.
 """
 import pytest
 from app.ollama_client import (
+    parse_judge_response,
     parse_triage_response,
     parse_flags,
     extract_flags_from_transcript,
@@ -139,7 +140,6 @@ class TestValidateUrgencyClassification:
         assert urgency == "urgent"
 
     def test_immunocompromised_escalates_routine_to_semi_urgent(self):
-        # Use risk string that appears in medical_history_str (joined and lowercased)
         urgency, conf = validate_urgency_classification(
             transcript="Mild sore throat.",
             llm_urgency="routine",
@@ -149,7 +149,6 @@ class TestValidateUrgencyClassification:
         assert urgency == "semi-urgent"
 
     def test_downgrade_urgent_to_routine_when_evidence_is_routine(self):
-        """LLM says urgent but transcript/summary indicate mild, improving, no red flags -> downgrade to routine."""
         urgency, conf = validate_urgency_classification(
             transcript="chief_complaint:congestion. symptom_duration:1 day. symptom_severity:2 out of 10. symptom_progression:getting better. red_flags:No. risk_factors:No",
             llm_urgency="urgent",
@@ -160,7 +159,6 @@ class TestValidateUrgencyClassification:
         assert conf == "high"
 
     def test_slot_red_flags_no_does_not_escalate(self):
-        """Transcript with red_flags:No (slot format) must NOT trigger Rule 1 escalation."""
         urgency, _ = validate_urgency_classification(
             transcript="chief_complaint:sore throat. symptom_severity:mild. red_flags:No. risk_factors:No",
             llm_urgency="routine",
@@ -169,7 +167,6 @@ class TestValidateUrgencyClassification:
         assert urgency == "routine"
 
     def test_natural_language_red_flag_escalates(self):
-        """Transcript with 'red flag' phrase (natural language) must escalate to urgent."""
         urgency, _ = validate_urgency_classification(
             transcript="Patient reports symptoms. Clinician noted red flag for breathing difficulty.",
             llm_urgency="routine",
@@ -178,10 +175,25 @@ class TestValidateUrgencyClassification:
         assert urgency == "urgent"
 
     def test_red_flag_in_flags_escalates(self):
-        """RED_FLAG in flags list must escalate regardless of transcript."""
         urgency, _ = validate_urgency_classification(
-            transcript="Mild congestion, improving.",
+            transcript="Patient reports congestion for several days without improvement.",
             llm_urgency="routine",
             flags=[{"tag": "RED_FLAG", "keyword": "fever"}],
         )
         assert urgency == "urgent"
+
+
+class TestParseJudgeResponse:
+    def test_parses_valid_schema(self):
+        text = """FINAL_URGENCY: semi-urgent
+JUDGE_REASONING: Symptoms are worsening but no airway compromise.
+DECISION_FACTORS: worsening,moderate_severity,no_airway_risk"""
+        parsed = parse_judge_response(text)
+        assert parsed["urgency"] == "semi-urgent"
+        assert "worsening" in parsed["reasoning"].lower()
+        assert "moderate_severity" in parsed["decision_factors"]
+
+    def test_malformed_defaults_to_safe_urgent(self):
+        parsed = parse_judge_response("some unstructured output")
+        assert parsed["urgency"] == "urgent"
+        assert "malformed" in parsed["decision_factors"]

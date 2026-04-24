@@ -6,6 +6,12 @@ import re
 import httpx
 
 from app.config import settings
+from app.prompts import (
+    JUDGE_SYSTEM_PROMPT,
+    JUDGE_USER_PROMPT_TEMPLATE,
+    TRIAGE_SYSTEM_PROMPT,
+    TRIAGE_USER_PROMPT_TEMPLATE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +28,6 @@ def _trace(stage: str, data: dict) -> None:
             f.write(json.dumps({"stage": stage, **data}) + "\n")
     except Exception:
         pass
-from app.prompts import TRIAGE_SYSTEM_PROMPT, TRIAGE_USER_PROMPT_TEMPLATE
 
 
 # Define keyword dictionaries for automatic flag extraction
@@ -102,9 +107,63 @@ def _build_prompt(transcript: str, patient_history: dict) -> tuple[str, str]:
     return TRIAGE_SYSTEM_PROMPT.strip(), user_prompt
 
 
-async def _call_groq(transcript: str, patient_history: dict) -> dict:
-    """Call Groq API (OpenAI-compatible) for triage."""
-    system_prompt, user_prompt = _build_prompt(transcript, patient_history)
+def _build_judge_prompt(
+    transcript: str,
+    patient_history: dict,
+    ollama_result: dict,
+    rf_result: dict,
+) -> tuple[str, str]:
+    """Build Groq judge prompts from transcript + model outputs."""
+    history = ", ".join(patient_history.get("medicalHistory", [])) or "None documented"
+    findings = ollama_result.get("findings", [])
+    findings_text = "; ".join(findings) if findings else "None"
+    user_prompt = (
+        JUDGE_USER_PROMPT_TEMPLATE
+        .replace("<<TRANSCRIPT>>", transcript)
+        .replace("<<PATIENT_HISTORY>>", history)
+        .replace("<<OLLAMA_SUMMARY>>", ollama_result.get("summary", ""))
+        .replace("<<OLLAMA_FINDINGS>>", findings_text)
+        .replace("<<OLLAMA_URGENCY>>", ollama_result.get("urgency", "routine"))
+        .replace("<<OLLAMA_REASONING>>", ollama_result.get("reasoning", ""))
+        .replace("<<RF_URGENCY>>", rf_result.get("urgency", "routine"))
+        .replace("<<RF_CONFIDENCE>>", str(rf_result.get("confidence", 0.0)))
+        .replace("<<RF_SOURCE>>", rf_result.get("source", "random_forest"))
+    )
+    return JUDGE_SYSTEM_PROMPT.strip(), user_prompt
+
+
+def _llm_config_error(message: str) -> dict:
+    """Structured triage dict when the LLM cannot run (misconfiguration or disabled path)."""
+    logger.error("[TRIAGE] %s", message)
+    return {
+        "summary": f"Error: {message}",
+        "urgency": "routine",
+        "findings": [],
+        "flags": [],
+        "reasoning": "Error during processing",
+    }
+
+
+async def call_groq_judge(
+    transcript: str,
+    patient_history: dict,
+    ollama_result: dict,
+    rf_result: dict,
+) -> dict:
+    """Call Groq LLM-as-a-judge to resolve urgency disagreement."""
+    if not getattr(settings, "GROQ_API_KEY", None):
+        return {
+            "urgency": "urgent",
+            "reasoning": "Judge unavailable: GROQ_API_KEY is not set. Escalating safely.",
+            "decision_factors": "judge_unavailable,safety_first",
+            "raw_output": "",
+        }
+    system_prompt, user_prompt = _build_judge_prompt(
+        transcript=transcript,
+        patient_history=patient_history,
+        ollama_result=ollama_result,
+        rf_result=rf_result,
+    )
     model = settings.GROQ_MODEL
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
@@ -121,64 +180,32 @@ async def _call_groq(transcript: str, patient_history: dict) -> dict:
                         {"role": "user", "content": user_prompt},
                     ],
                     "temperature": 0.2,
+                    "max_tokens": 300,
                 },
             )
         resp.raise_for_status()
         data = resp.json()
         raw_text = data["choices"][0]["message"]["content"] or ""
-        logger.info("[TRIAGE] model=%s | llm_raw_output:\n%s", model, raw_text)
-        result = parse_triage_response(raw_text)
-        if not result["flags"]:
-            result["flags"] = extract_flags_from_transcript(transcript, result["urgency"])
-        return result
+        logger.info("[JUDGE] model=%s | raw_output:\n%s", model, raw_text)
+        parsed = parse_judge_response(raw_text)
+        parsed["raw_output"] = raw_text
+        return parsed
     except Exception as e:
-        print(f"⚠️ Groq API error: {e}")
+        print(f"⚠️ Groq judge error: {e}")
         return {
-            "summary": f"Error: {str(e)}",
-            "urgency": "routine",
-            "findings": [],
-            "flags": [],
-            "reasoning": "Error during processing",
+            "urgency": "urgent",
+            "reasoning": f"Judge error ({e}). Escalating safely.",
+            "decision_factors": "judge_error,safety_first",
+            "raw_output": "",
         }
 
 
-async def call_ollama(
-    transcript: str,
-    patient_history: dict = None
-) -> dict:
-    """
-    Call LLM for triage analysis. Uses Groq if LLM_PROVIDER=groq and GROQ_API_KEY is set,
-    otherwise uses Ollama.
-    
-    Returns dict with keys:
-    - summary: Clinical summary
-    - urgency: Urgency level (routine, semi-urgent, urgent)
-    - findings: Key findings/red flags
-    - flags: Tagged keywords explaining why AI made this decision
-    - reasoning: Explanation for urgency classification
-    """
-    if patient_history is None:
-        patient_history = {}
-
-    # Use Groq if configured
-    if getattr(settings, "LLM_PROVIDER", "ollama") == "groq" and getattr(settings, "GROQ_API_KEY", None):
-        return await _call_groq(transcript, patient_history)
-
-    # Ollama path
+async def _call_ollama_local(transcript: str, patient_history: dict) -> dict:
+    """Call local Ollama HTTP /api/generate (same prompt shape as before Hub inference)."""
     model = settings.OLLAMA_MODEL_NAME
-    logger.info("[TRIAGE] Calling finetuned Ollama model: %s at %s", model, settings.OLLAMA_BASE_URL)
+    logger.info("[TRIAGE] Calling Ollama model: %s at %s", model, settings.OLLAMA_BASE_URL)
     system_prompt, user_prompt = _build_prompt(transcript, patient_history)
     prompt = system_prompt + "\n\n" + user_prompt
-    # #region agent log
-    try:
-        import json as _json
-        import time as _time
-        _log_path = "/Users/joshuamatni/Downloads/ai_service/.cursor/debug-891cae.log"
-        with open(_log_path, "a") as _f:
-            _f.write(_json.dumps({"sessionId":"891cae","hypothesisId":"H1_H2_H4_H5","timestamp":int(_time.time()*1000),"location":"ollama_client.py:call_ollama","message":"Prompt structure before Ollama","data":{"prompt_len":len(prompt),"prompt_first_500":prompt[:500],"prompt_last_600":prompt[-600:],"has_SUMMARY_in_prompt":"SUMMARY:" in prompt,"transcript_in_last_800":transcript[:200] in prompt[-800:] if transcript else False,"transcript_len":len(transcript),"runId":"post-fix"}})+"\n")
-    except Exception:
-        pass
-    # #endregion
     payload = {
         "model": settings.OLLAMA_MODEL_NAME,
         "prompt": prompt,
@@ -197,7 +224,7 @@ async def call_ollama(
         raw_text = data.get("response", "")
         logger.info("[TRIAGE] model=%s | llm_raw_output:\n%s", model, raw_text)
         result = parse_triage_response(raw_text)
-        _trace("call_ollama", {
+        _trace("call_ollama_local", {
             "llm_raw_preview": raw_text[:500] if raw_text else "",
             "parsed_urgency": result.get("urgency"),
         })
@@ -222,6 +249,54 @@ async def call_ollama(
             "flags": [],
             "reasoning": "Error during processing",
         }
+
+
+async def call_ollama(
+    transcript: str,
+    patient_history: dict = None
+) -> dict:
+    """
+    Call LLM for triage analysis.
+
+    Triage generation always uses Ollama in the consensus pipeline.
+
+    Returns dict with keys:
+    - summary: Clinical summary
+    - urgency: Urgency level (routine, semi-urgent, urgent)
+    - findings: Key findings/red flags
+    - flags: Tagged keywords explaining why AI made this decision
+    - reasoning: Explanation for urgency classification
+    """
+    if patient_history is None:
+        patient_history = {}
+
+    provider = (getattr(settings, "LLM_PROVIDER", None) or "ollama").strip().lower()
+    if provider != "ollama":
+        logger.warning(
+            "[TRIAGE] LLM_PROVIDER=%r requested, but triage generation is pinned to Ollama in this pipeline.",
+            settings.LLM_PROVIDER,
+        )
+    return await _call_ollama_local(transcript, patient_history)
+
+
+def parse_judge_response(response_text: str) -> dict:
+    """Parse LLM-as-a-judge output schema."""
+    result = {
+        "urgency": "urgent",
+        "reasoning": "Judge output malformed. Escalating safely.",
+        "decision_factors": "malformed_output,safety_first",
+    }
+    text = response_text or ""
+    urgency_match = re.search(r"FINAL_URGENCY:\s*(routine|semi-urgent|urgent)", text, re.IGNORECASE)
+    reasoning_match = re.search(r"JUDGE_REASONING:\s*(.+?)(?=DECISION_FACTORS:|$)", text, re.DOTALL | re.IGNORECASE)
+    factors_match = re.search(r"DECISION_FACTORS:\s*(.+)$", text, re.DOTALL | re.IGNORECASE)
+    if urgency_match:
+        result["urgency"] = urgency_match.group(1).lower().strip()
+    if reasoning_match:
+        result["reasoning"] = reasoning_match.group(1).strip()
+    if factors_match:
+        result["decision_factors"] = factors_match.group(1).strip()
+    return result
 
 
 def parse_triage_response(response_text: str) -> dict:
@@ -278,9 +353,30 @@ def parse_triage_response(response_text: str) -> dict:
         reasoning_match = re.search(r'REASONING:\s*(.+?)(?=\n\n|$)', response_text, re.DOTALL | re.IGNORECASE)
         if reasoning_match:
             result["reasoning"] = reasoning_match.group(1).strip()
-        
+
+        # Minimal fallback when model skipped SUMMARY: label
+        text = (response_text or "").strip()
+        if not result["summary"]:
+            # Fallback 1: model output "Patient presents with..." as first line (no SUMMARY: label)
+            patient_line = re.search(
+                r'(Patient presents with [^.]+(?:\. [^.]+)*\.)',
+                text,
+                re.IGNORECASE | re.DOTALL
+            )
+            if patient_line and len(patient_line.group(1)) > 30:
+                result["summary"] = patient_line.group(1).strip()[:800]
+            # Fallback 2: build from FINDINGS only (safe, no REASONING - can contradict transcript)
+            elif result["findings"]:
+                result["summary"] = "Patient presents with " + ". ".join(result["findings"][:5]) + "."
+
+        if not result["summary"] or not summary_match:
+            logger.warning(
+                "[PARSE] SUMMARY: missing in model output | first_150_chars=%r",
+                text[:150],
+            )
+
         return result
-    
+
     except Exception as e:
         print(f"⚠️ Failed to parse LLM response: {e}")
         # Return best-effort parsing

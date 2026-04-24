@@ -64,6 +64,33 @@ python -m validation.run_validation --eval-file validation/data/synthetic_eval.j
 
 This sends each transcript to `POST /ai/triage`, uses the returned **summary** field, and scores it against the transcript.
 
+### 4. Evaluate finetuned better-triage model (Ollama direct)
+
+Evaluates the **better-triage** finetuned model on `combined_triage_training.jsonl`. Calls Ollama directly (no FastAPI needed). Computes correctness, faithfulness, relevance on the model's summary, plus **urgency accuracy** (predicted vs expected). Uses prompts from `app/prompts.py`. Logs progress to the terminal.
+
+**Prerequisites:** Ollama running with `better-triage` model (`ollama list`).
+
+```bash
+python -m validation.run_finetuned_eval
+python -m validation.run_finetuned_eval --limit 20
+python -m validation.run_finetuned_eval --n-routine 100 --n-semi 50 --n-urgent 50 --verbose
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--data` | `modelling/data/combined_triage_training.jsonl` | Path to combined JSONL (transcript + output). |
+| `--limit` | None | Cap total rows for quick runs. |
+| `--n-routine` | 50 | Max routine samples. |
+| `--n-semi` | 30 | Max semi-urgent samples. |
+| `--n-urgent` | 30 | Max urgent samples. |
+| `--verbose` | False | Print per-sample details. |
+
+**Difference from other scripts:**
+
+- **run_validation**: Uses synthetic_eval.jsonl or API; no urgency accuracy; no direct Ollama.
+- **eval_urgency** (scripts/): Urgency accuracy only; no correctness/faithfulness/relevance; includes validate_urgency_classification.
+- **run_finetuned_eval**: Combines all four metrics; calls Ollama directly; uses combined_triage_training.jsonl.
+
 ## Eval file format (JSONL)
 
 Each line is a JSON object:
@@ -90,6 +117,7 @@ Example:
 | `metrics.py` | Rule-based scorers: `score_correctness`, `score_faithfulness`, `score_relevance`, and `validate_summary()`. |
 | `synthetic_data.py` | Generates `data/synthetic_eval.jsonl` with (transcript, reference_summary, urgency). |
 | `run_validation.py` | CLI: load eval data, get summaries (reference or API), run metrics, print report. |
+| `run_finetuned_eval.py` | CLI: evaluate better-triage on combined_triage_training.jsonl; correctness, faithfulness, relevance, urgency accuracy; direct Ollama calls. |
 | `data/synthetic_eval.jsonl` | Generated eval set (create with `--generate`). |
 
 ## Extending

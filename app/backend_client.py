@@ -7,6 +7,12 @@ logger = logging.getLogger(__name__)
 SERVICE_TOKEN = None
 
 
+def _clear_token():
+    """Invalidate cached token (e.g. after backend error)."""
+    global SERVICE_TOKEN
+    SERVICE_TOKEN = None
+
+
 async def get_service_token() -> str:
     """Authenticate with backend via JWT login. Returns access token."""
     global SERVICE_TOKEN
@@ -20,23 +26,32 @@ async def get_service_token() -> str:
     }
     logger.info("Authenticating with backend at %s/auth/login", settings.BACKEND_BASE_URL)
 
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                f"{settings.BACKEND_BASE_URL}/auth/login",
-                json=login_payload,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        tok = data.get("access_token")
-        if not tok:
-            raise ValueError(f"Backend login response missing 'access_token'; got keys: {list(data.keys())}")
-        SERVICE_TOKEN = tok
-        logger.info("Backend auth successful")
-        return SERVICE_TOKEN
-    except Exception as e:
-        logger.error("Backend auth failed: %s", e, exc_info=True)
-        raise
+    last_err = None
+    for attempt in range(2):
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(
+                    f"{settings.BACKEND_BASE_URL}/auth/login",
+                    json=login_payload,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+            tok = data.get("access_token")
+            if not tok:
+                raise ValueError(f"Backend login response missing 'access_token'; got keys: {list(data.keys())}")
+            SERVICE_TOKEN = tok
+            logger.info("Backend auth successful")
+            return SERVICE_TOKEN
+        except (httpx.ReadError, httpx.ConnectError, httpx.ConnectTimeout) as e:
+            last_err = e
+            logger.warning("Backend auth attempt %d failed (network): %s", attempt + 1, e)
+            if attempt == 0:
+                continue
+        except Exception as e:
+            logger.error("Backend auth failed: %s", e, exc_info=True)
+            raise
+    logger.error("Backend auth failed after retries: %s. Is the backend running at %s?", last_err, settings.BACKEND_BASE_URL)
+    raise last_err
 
 
 def _is_known_patient(patient_id: str) -> bool:
@@ -155,29 +170,41 @@ async def save_triage_to_backend(
         )
         return False, None, "skipped (invalid UUID)"
 
-    try:
-        token = await get_service_token()
-        payload = _map_ai_to_backend_payload(
-            patient_id=patient_id,
-            transcript=transcript,
-            summary=summary,
-            urgency=urgency,
-            confidence=confidence,
-            flags=flags,
-        )
-
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        }
-
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                f"{settings.BACKEND_BASE_URL}/triage-cases/",
-                json=payload,
-                headers=headers,
+    last_err = None
+    for attempt in range(2):
+        try:
+            token = await get_service_token()
+            payload = _map_ai_to_backend_payload(
+                patient_id=patient_id,
+                transcript=transcript,
+                summary=summary,
+                urgency=urgency,
+                confidence=confidence,
+                flags=flags,
             )
 
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            }
+
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(
+                    f"{settings.BACKEND_BASE_URL}/triage-cases/",
+                    json=payload,
+                    headers=headers,
+                )
+            break
+        except (httpx.ReadError, httpx.ConnectError, httpx.ConnectTimeout) as e:
+            last_err = e
+            _clear_token()
+            if attempt == 0:
+                logger.warning("Backend save attempt 1 failed (network): %s; retrying with fresh token", e)
+                continue
+            logger.error("Backend save failed after retry: %s. Is backend running at %s?", e, settings.BACKEND_BASE_URL)
+            raise
+
+    try:
         if resp.status_code >= 400:
             logger.error(
                 "Backend POST /triage-cases/ failed: status=%d, body=%s, payload=%s",
