@@ -20,6 +20,7 @@ Patient Call / Transcript
     ↓
 Your Triage API (FastAPI)
     ├── LLM Analysis (Ollama)
+    ├── Optional Groq output review (coverage vs transcript; may revise summary)
     ├── Medical History Lookup (optional)
     ├── Multi-Layer Validation
     └── Flag Extraction
@@ -184,6 +185,13 @@ See `docs/EC2_DEPLOYMENT_GUIDE.md` for detailed instructions.
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_MODEL_NAME=triage-mistral
 TRUST_LLM_URGENCY=1
+
+# Groq (optional): same model for urgency judge (Ollama vs RF disagree) and
+# LLM output review (coverage check; may revise summary). Set GROQ_API_KEY to enable.
+GROQ_API_KEY=
+GROQ_MODEL=llama-3.1-8b-instant
+ENABLE_LLM_JUDGE=true
+ENABLE_LLM_OUTPUT_REVIEW=true
 
 # Backend API (for patient history)
 BACKEND_BASE_URL=http://localhost:8000

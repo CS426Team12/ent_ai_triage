@@ -9,6 +9,8 @@ from app.config import settings
 from app.prompts import (
     JUDGE_SYSTEM_PROMPT,
     JUDGE_USER_PROMPT_TEMPLATE,
+    REVIEW_SYSTEM_PROMPT,
+    REVIEW_USER_PROMPT_TEMPLATE,
     TRIAGE_SYSTEM_PROMPT,
     TRIAGE_USER_PROMPT_TEMPLATE,
 )
@@ -132,6 +134,67 @@ def _build_judge_prompt(
     return JUDGE_SYSTEM_PROMPT.strip(), user_prompt
 
 
+def _build_review_prompt(transcript: str, patient_history: dict, ollama_result: dict) -> tuple[str, str]:
+    """Build Groq output-review prompts (completeness vs transcript)."""
+    medical_history = ", ".join(patient_history.get("medicalHistory", [])) or "None documented"
+    previous_visits = ", ".join(patient_history.get("previousVisits", [])) or "None documented"
+    allergies = ", ".join(patient_history.get("allergies", [])) or "None documented"
+    history_block = (
+        f"Medical history: {medical_history}\n"
+        f"Previous ENT visits: {previous_visits}\n"
+        f"Allergies: {allergies}"
+    )
+    findings = ollama_result.get("findings", [])
+    findings_text = "\n".join(f"- {f}" for f in findings) if findings else "(none listed)"
+    user_prompt = (
+        REVIEW_USER_PROMPT_TEMPLATE.replace("<<TRANSCRIPT>>", transcript)
+        .replace("<<PATIENT_HISTORY>>", history_block)
+        .replace("<<OLLAMA_SUMMARY>>", ollama_result.get("summary", ""))
+        .replace("<<OLLAMA_FINDINGS>>", findings_text)
+        .replace("<<OLLAMA_URGENCY>>", ollama_result.get("urgency", "routine"))
+        .replace("<<OLLAMA_REASONING>>", ollama_result.get("reasoning", ""))
+    )
+    return REVIEW_SYSTEM_PROMPT.strip(), user_prompt
+
+
+async def _post_groq_chat(
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    max_tokens: int,
+    timeout: float = 60.0,
+    temperature: float = 0.2,
+) -> str:
+    """POST to Groq OpenAI-compatible chat; returns assistant message text or empty string if misconfigured."""
+    if not getattr(settings, "GROQ_API_KEY", None):
+        return ""
+    model = settings.GROQ_MODEL
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {settings.GROQ_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                },
+            )
+        resp.raise_for_status()
+        data = resp.json()
+        return (data["choices"][0]["message"]["content"] or "").strip()
+    except Exception as e:
+        logger.warning("[GROQ] chat request failed: %s", e)
+        return ""
+
+
 def _llm_config_error(message: str) -> dict:
     """Structured triage dict when the LLM cannot run (misconfiguration or disabled path)."""
     logger.error("[TRIAGE] %s", message)
@@ -164,40 +227,112 @@ async def call_groq_judge(
         ollama_result=ollama_result,
         rf_result=rf_result,
     )
-    model = settings.GROQ_MODEL
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {settings.GROQ_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    "temperature": 0.2,
-                    "max_tokens": 300,
-                },
-            )
-        resp.raise_for_status()
-        data = resp.json()
-        raw_text = data["choices"][0]["message"]["content"] or ""
-        logger.info("[JUDGE] model=%s | raw_output:\n%s", model, raw_text)
-        parsed = parse_judge_response(raw_text)
-        parsed["raw_output"] = raw_text
-        return parsed
-    except Exception as e:
-        print(f"⚠️ Groq judge error: {e}")
+    raw_text = await _post_groq_chat(
+        system_prompt, user_prompt, max_tokens=300, timeout=60.0, temperature=0.0
+    )
+    if not raw_text:
         return {
             "urgency": "urgent",
-            "reasoning": f"Judge error ({e}). Escalating safely.",
-            "decision_factors": "judge_error,safety_first",
+            "reasoning": "Judge unavailable: empty Groq response. Escalating safely.",
+            "decision_factors": "judge_unavailable,safety_first",
             "raw_output": "",
         }
+    logger.info("[JUDGE] model=%s | raw_output:\n%s", settings.GROQ_MODEL, raw_text)
+    parsed = parse_judge_response(raw_text)
+    parsed["raw_output"] = raw_text
+    return parsed
+
+
+def parse_review_response(response_text: str, original_summary: str) -> dict:
+    """Parse Groq output-review schema; returns applied, revised_summary, coverage_ok, missing_or_omitted."""
+    text = (response_text or "").strip()
+    out: dict = {
+        "applied": False,
+        "revised_summary": "",
+        "coverage_ok": True,
+        "missing_or_omitted": "",
+        "raw_output": text,
+    }
+    cov_m = re.search(r"COVERAGE_OK:\s*(yes|no)\b", text, re.IGNORECASE)
+    missing_m = re.search(r"MISSING_OR_OMITTED:\s*(.+?)(?=REVISED_SUMMARY:|$)", text, re.DOTALL | re.IGNORECASE)
+    rev_m = re.search(r"REVISED_SUMMARY:\s*(.+)$", text, re.DOTALL | re.IGNORECASE)
+
+    coverage_ok = True
+    if cov_m:
+        coverage_ok = cov_m.group(1).lower().strip() == "yes"
+    out["coverage_ok"] = coverage_ok
+    if missing_m:
+        out["missing_or_omitted"] = missing_m.group(1).strip()
+
+    revised = rev_m.group(1).strip() if rev_m else ""
+    out["revised_summary"] = revised
+    if not revised:
+        return out
+    rev_norm = revised.upper().replace(" ", "_")
+    if "USE_ORIGINAL" in rev_norm:
+        return out
+    if coverage_ok:
+        return out
+    # Gaps reported: apply revised summary when it looks substantive
+    if len(revised) < 20:
+        return out
+    out["applied"] = True
+    return out
+
+
+async def call_groq_output_review(
+    transcript: str,
+    patient_history: dict,
+    ollama_result: dict,
+) -> dict:
+    """Groq pass: check triage summary/findings vs transcript; optionally revise summary."""
+    if not getattr(settings, "ENABLE_LLM_OUTPUT_REVIEW", True):
+        return {
+            "applied": False,
+            "revised_summary": "",
+            "coverage_ok": True,
+            "missing_or_omitted": "",
+            "raw_output": "",
+        }
+    if not getattr(settings, "GROQ_API_KEY", None):
+        logger.info("[REVIEW] skipped: GROQ_API_KEY not set")
+        return {
+            "applied": False,
+            "revised_summary": "",
+            "coverage_ok": True,
+            "missing_or_omitted": "",
+            "raw_output": "",
+        }
+    system_prompt, user_prompt = _build_review_prompt(transcript, patient_history, ollama_result)
+    raw_text = await _post_groq_chat(system_prompt, user_prompt, max_tokens=700, timeout=45.0)
+    if not raw_text:
+        return {
+            "applied": False,
+            "revised_summary": "",
+            "coverage_ok": True,
+            "missing_or_omitted": "",
+            "raw_output": "",
+        }
+    logger.info("[REVIEW] model=%s | raw_output:\n%s", settings.GROQ_MODEL, raw_text)
+    original = ollama_result.get("summary", "") or ""
+    parsed = parse_review_response(raw_text, original)
+    if parsed["applied"] and parsed.get("revised_summary"):
+        logger.info(
+            "[REVIEW] summary revised | missing_or_omitted=%r",
+            (parsed.get("missing_or_omitted") or "")[:300],
+        )
+    return parsed
+
+
+async def apply_groq_output_review_if_enabled(
+    transcript: str,
+    patient_history: dict,
+    llm_result: dict,
+) -> None:
+    """Mutate llm_result['summary'] when Groq review finds gaps (no-op if disabled or unchanged)."""
+    review = await call_groq_output_review(transcript, patient_history, llm_result)
+    if review.get("applied") and review.get("revised_summary"):
+        llm_result["summary"] = review["revised_summary"]
 
 
 async def _call_ollama_local(transcript: str, patient_history: dict) -> dict:
@@ -574,7 +709,58 @@ def validate_urgency_classification(
             adjusted_urgency = "routine"
             confidence = "high"
             # print(f"✓ Downgrading {llm_urgency} → routine: transcript/summary indicate mild, improving, no red flags")
-    
+
+    # Rule 3c: semi-urgent without transcript support (avoid using semi as a default tier)
+    if (
+        adjusted_urgency == "semi-urgent"
+        and not has_red_flag
+        and not red_flag_in_transcript
+        and not is_immunocompromised
+        and not is_high_risk
+    ):
+        worsen_phrases = (
+            "worsening",
+            "getting worse",
+            "deteriorating",
+            "progressively",
+            "much worse",
+            "spreading",
+        )
+        has_worsening = any(p in transcript_lower for p in worsen_phrases)
+        # Standalone "worse" but not "not worse" / "no worse"
+        has_worsening = has_worsening or bool(
+            re.search(r"(?<!not )(?<!no )\bworse\b", transcript_lower)
+        )
+        has_worsening = has_worsening or bool(
+            re.search(r"\brapid(?:ly)?\b", transcript_lower)
+        )
+        severe_words = (
+            "severe",
+            "unbearable",
+            "worst",
+            "excruciating",
+            "high fever",
+            "103°",
+            "104°",
+            "105°",
+        )
+        has_severe = any(w in transcript_lower for w in severe_words)
+        mildish = "mild" in transcript_lower or "mild" in summary_lower
+        same_as_before = bool(re.search(r"\bsame\b", transcript_lower))
+        moderate_stable = (
+            ("moderate" in transcript_lower or "moderate" in summary_lower)
+            and (
+                "stable" in transcript_lower
+                or "stable" in summary_lower
+                or "unchanged" in transcript_lower
+                or same_as_before
+            )
+        )
+        if not has_worsening and not has_severe and (mildish or moderate_stable):
+            adjusted_urgency = "routine"
+            confidence = "medium"
+            rule_fired = "3c"
+
     # Rule 4: Low ML confidence on serious classification = reduce confidence
     if ml_confidence < 0.6 and adjusted_urgency in ["semi-urgent", "urgent"]:
         confidence = "medium"

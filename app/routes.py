@@ -1,10 +1,16 @@
 import logging
+import random
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body
 from pydantic import BaseModel, Field
 
-from app.ollama_client import call_groq_judge, call_ollama, validate_urgency_classification
+from app.ollama_client import (
+    apply_groq_output_review_if_enabled,
+    call_groq_judge,
+    call_ollama,
+    validate_urgency_classification,
+)
 from app.backend_client import save_triage_to_backend, get_patient_history
 from app.rf_client import predict_rf_urgency
 
@@ -13,8 +19,22 @@ logger = logging.getLogger(__name__)
 
 # Placeholder when no patient verification (e.g. Lex/Twilio intake without lookup)
 UNKNOWN_PATIENT_ID = "unknown"
-# Fallback patient for backend save when Lex/Twilio sends "unknown" (demo/development)
-FALLBACK_PATIENT_ID = "cc95fc5b-7dfe-48ed-9772-979bfd0b1ecc"
+# Demo/dev: when client sends unknown/null, pick a random backend patient UUID for save/history
+FALLBACK_PATIENT_IDS: tuple[str, ...] = (
+    "b5603780-eb62-46c2-a0ba-d4d796b1cb60",
+    "feda50dc-6fd6-4eac-9788-37c600bcd4cb",
+    "cc95fc5b-7dfe-48ed-9772-979bfd0b1ecc",
+    "a9a58f18-3282-40f4-9b07-a5868067f7c4",
+    "acb6d9cb-f75c-4220-a692-f840612ec335",
+    "d6b0ab6a-ac7b-47ba-bb63-5a5897f74d8f",
+    "ac9b7d46-cd00-431f-9096-4f2d285904f9",
+    "27236692-52ca-4454-9311-dc8d3db27a0f",
+)
+
+
+def pick_fallback_patient_id() -> str:
+    """Random UUID from FALLBACK_PATIENT_IDS when intake has no verified patient."""
+    return random.choice(FALLBACK_PATIENT_IDS)
 
 
 class TriageRequest(BaseModel):
@@ -90,7 +110,7 @@ async def triage(payload: TriageRequest):
     patient_id = payload.patient_id or UNKNOWN_PATIENT_ID
     # Use fallback when "unknown" so backend save works (demo/development)
     if patient_id.lower() in ("unknown", "null", ""):
-        patient_id = FALLBACK_PATIENT_ID
+        patient_id = pick_fallback_patient_id()
     preview = _transcript_preview(payload.transcript)
     logger.info(
         f"TRIAGE CALL RECEIVED | patient_id={patient_id} | transcript_len={len(payload.transcript)} | "
@@ -106,7 +126,8 @@ async def triage(payload: TriageRequest):
     # Call LLM with transcript + patient history
     # LLM now does BOTH summary generation AND urgency classification
     llm_result = await call_ollama(payload.transcript, patient_history)
-    
+    await apply_groq_output_review_if_enabled(payload.transcript, patient_history, llm_result)
+
     summary = llm_result.get("summary", "")
     urgency = llm_result.get("urgency", "routine")
     findings = llm_result.get("findings", [])
@@ -197,7 +218,7 @@ async def test_pipeline(payload: TestPipelineRequest | None = Body(default=None)
     """
     patient_id = (payload.patient_id if payload else UNKNOWN_PATIENT_ID) or UNKNOWN_PATIENT_ID
     if patient_id.lower() in ("unknown", "null", ""):
-        patient_id = FALLBACK_PATIENT_ID
+        patient_id = pick_fallback_patient_id()
     transcript = MOCK_TWILIO_TRANSCRIPT
 
     logger.info("Step 1: Simulated Twilio transcript received")
@@ -210,6 +231,7 @@ async def test_pipeline(payload: TestPipelineRequest | None = Body(default=None)
         patient_history = await get_patient_history(patient_id)
 
     llm_result = await call_ollama(transcript, patient_history)
+    await apply_groq_output_review_if_enabled(transcript, patient_history, llm_result)
     summary = llm_result.get("summary", "")
     urgency = llm_result.get("urgency", "routine")
     findings = llm_result.get("findings", [])

@@ -5,6 +5,7 @@ extract_flags_from_transcript, validate_urgency_classification.
 import pytest
 from app.ollama_client import (
     parse_judge_response,
+    parse_review_response,
     parse_triage_response,
     parse_flags,
     extract_flags_from_transcript,
@@ -181,6 +182,51 @@ class TestValidateUrgencyClassification:
             flags=[{"tag": "RED_FLAG", "keyword": "fever"}],
         )
         assert urgency == "urgent"
+
+    def test_semi_urgent_downgrades_to_routine_when_mild_stable_no_high_risk(self):
+        urgency, conf = validate_urgency_classification(
+            transcript="Mild sore throat for 2 days, stable, not worse.",
+            llm_urgency="semi-urgent",
+            flags=[{"tag": "SYMPTOM", "keyword": "sore throat"}],
+        )
+        assert urgency == "routine"
+        assert conf == "medium"
+
+    def test_semi_urgent_keeps_when_worsening(self):
+        urgency, _ = validate_urgency_classification(
+            transcript="Moderate ear pain worsening over 3 days.",
+            llm_urgency="semi-urgent",
+            flags=[],
+        )
+        assert urgency == "semi-urgent"
+
+    def test_semi_urgent_keeps_for_high_risk_even_if_mild(self):
+        urgency, _ = validate_urgency_classification(
+            transcript="Mild sore throat, stable.",
+            llm_urgency="semi-urgent",
+            flags=[],
+            patient_history={"medicalHistory": ["diabetes"]},
+        )
+        assert urgency == "semi-urgent"
+
+
+class TestParseReviewResponse:
+    def test_coverage_yes_use_original_not_applied(self):
+        text = """COVERAGE_OK: yes
+MISSING_OR_OMITTED: none
+REVISED_SUMMARY: USE_ORIGINAL"""
+        p = parse_review_response(text, "Original summary here.")
+        assert p["coverage_ok"] is True
+        assert p["applied"] is False
+
+    def test_coverage_no_applies_revised(self):
+        text = """COVERAGE_OK: no
+MISSING_OR_OMITTED: duration, diabetes
+REVISED_SUMMARY: Patient with left ear pain for four days, worsening, with diabetes noted; subjective hearing loss and low-grade fever documented."""
+        p = parse_review_response(text, "Short summary.")
+        assert p["coverage_ok"] is False
+        assert p["applied"] is True
+        assert "diabetes" in p["revised_summary"].lower()
 
 
 class TestParseJudgeResponse:

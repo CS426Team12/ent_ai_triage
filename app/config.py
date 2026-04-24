@@ -35,6 +35,8 @@ class Settings(BaseSettings):
 
     # LLM-as-a-judge (Groq)
     ENABLE_LLM_JUDGE: bool = True
+    # Groq: re-read triage output vs transcript and revise summary if important facts were omitted
+    ENABLE_LLM_OUTPUT_REVIEW: bool = True
     TRUST_LLM_URGENCY: bool = False  # When True, skip urgency validation and trust finetuned model
     GROQ_API_KEY: str | None = None
     GROQ_MODEL: str = "llama-3.1-8b-instant"

@@ -13,8 +13,12 @@ from app.routes import (
     Flag,
     TriageResponse,
     UNKNOWN_PATIENT_ID,
-    FALLBACK_PATIENT_ID,
+    FALLBACK_PATIENT_IDS,
+    pick_fallback_patient_id,
 )
+
+# Deterministic resolved ID when tests patch pick_fallback_patient_id
+_TEST_FALLBACK_UUID = FALLBACK_PATIENT_IDS[0]
 
 
 class TestBuildTranscriptFromSlots:
@@ -93,6 +97,10 @@ class TestRequestResponseModels:
         assert r.flags == []
         assert r.ml_confidence == 0.0
 
+    def test_pick_fallback_patient_id_from_allowlist(self):
+        for _ in range(40):
+            assert pick_fallback_patient_id() in FALLBACK_PATIENT_IDS
+
 
 class TestTriageEndpoint:
     """Tests for POST /ai/triage (with mocks)."""
@@ -101,6 +109,8 @@ class TestTriageEndpoint:
     def _mock_dependencies(self):
         with (
             patch("app.routes.call_ollama", new_callable=AsyncMock) as m_ollama,
+            patch("app.routes.apply_groq_output_review_if_enabled", new_callable=AsyncMock) as m_review,
+            patch("app.routes.pick_fallback_patient_id", return_value=_TEST_FALLBACK_UUID),
             patch("app.routes.call_groq_judge", new_callable=AsyncMock) as m_judge,
             patch("app.routes.get_patient_history", new_callable=AsyncMock) as m_history,
             patch("app.routes.save_triage_to_backend", new_callable=AsyncMock) as m_save,
@@ -120,6 +130,7 @@ class TestTriageEndpoint:
             m_validate.return_value = ("routine", "high")
             yield {
                 "ollama": m_ollama,
+                "review": m_review,
                 "judge": m_judge,
                 "history": m_history,
                 "save": m_save,
@@ -147,7 +158,7 @@ class TestTriageEndpoint:
         self, client: TestClient, _mock_dependencies
     ):
         client.post("/ai/triage", json={"transcript": "sore throat", "patient_id": "unknown"})
-        _mock_dependencies["history"].assert_called_once_with(FALLBACK_PATIENT_ID)
+        _mock_dependencies["history"].assert_called_once_with(_TEST_FALLBACK_UUID)
 
     def test_triage_valid_patient_calls_history(
         self, client: TestClient, _mock_dependencies
@@ -175,6 +186,8 @@ class TestTriageFromSlotsEndpoint:
     def _mock_dependencies(self):
         with (
             patch("app.routes.call_ollama", new_callable=AsyncMock) as m_ollama,
+            patch("app.routes.apply_groq_output_review_if_enabled", new_callable=AsyncMock) as m_review,
+            patch("app.routes.pick_fallback_patient_id", return_value=_TEST_FALLBACK_UUID),
             patch("app.routes.call_groq_judge", new_callable=AsyncMock) as m_judge,
             patch("app.routes.get_patient_history", new_callable=AsyncMock) as m_history,
             patch("app.routes.save_triage_to_backend", new_callable=AsyncMock) as m_save,

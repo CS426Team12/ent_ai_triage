@@ -4,6 +4,8 @@ __pycache__/
 *$py.class
 
 modelling/model
+/Users/joshuamatni/Downloads/ai_service/ent_ai_triage/.env.example
+/Users/joshuamatni/Downloads/ai_service/ent_ai_triage/.env
 # C extensions
 *.so
 # Distribution / packaging
