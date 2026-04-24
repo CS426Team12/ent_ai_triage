@@ -1,5 +1,5 @@
 """
-Evaluate the finetuned better-triage LLM on combined_triage_training.jsonl.
+Evaluate the finetuned triage Ollama model on combined_triage_training.jsonl.
 
 Computes correctness, faithfulness, relevance (on summary) and urgency accuracy.
 Uses prompts from app/prompts.py via call_ollama. Logs progress to terminal.
@@ -9,7 +9,7 @@ Run from ent_ai_triage directory:
   python -m validation.run_finetuned_eval --limit 20
   python -m validation.run_finetuned_eval --n-routine 100 --n-semi 50 --n-urgent 50 --verbose
 
-Requires: Ollama running with better-triage model (ollama list).
+Requires: Ollama running with the model in OLLAMA_MODEL_NAME (default triage-mistral; ollama list).
 """
 
 import argparse
@@ -160,7 +160,7 @@ async def main() -> None:
             pass
 
     parser = argparse.ArgumentParser(
-        description="Evaluate finetuned better-triage on combined_triage_training.jsonl (correctness, faithfulness, relevance, urgency accuracy)."
+        description="Evaluate finetuned Ollama triage model on combined_triage_training.jsonl (correctness, faithfulness, relevance, urgency accuracy)."
     )
     parser.add_argument(
         "--data",

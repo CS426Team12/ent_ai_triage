@@ -30,7 +30,7 @@ class Settings(BaseSettings):
 
     # Ollama (local/remote) — primary model for triage generation
     OLLAMA_BASE_URL: str = "http://localhost:11434"
-    OLLAMA_MODEL_NAME: str = "better-triage"
+    OLLAMA_MODEL_NAME: str = "triage-mistral"
     LLM_PROVIDER: str = "ollama"
 
     # LLM-as-a-judge (Groq)

@@ -64,11 +64,11 @@ python -m validation.run_validation --eval-file validation/data/synthetic_eval.j
 
 This sends each transcript to `POST /ai/triage`, uses the returned **summary** field, and scores it against the transcript.
 
-### 4. Evaluate finetuned better-triage model (Ollama direct)
+### 4. Evaluate finetuned triage model (Ollama direct)
 
-Evaluates the **better-triage** finetuned model on `combined_triage_training.jsonl`. Calls Ollama directly (no FastAPI needed). Computes correctness, faithfulness, relevance on the model's summary, plus **urgency accuracy** (predicted vs expected). Uses prompts from `app/prompts.py`. Logs progress to the terminal.
+Evaluates the Ollama model named in **`OLLAMA_MODEL_NAME`** (default **triage-mistral**) on `combined_triage_training.jsonl`. Calls Ollama directly (no FastAPI needed). Computes correctness, faithfulness, relevance on the model's summary, plus **urgency accuracy** (predicted vs expected). Uses prompts from `app/prompts.py`. Logs progress to the terminal.
 
-**Prerequisites:** Ollama running with `better-triage` model (`ollama list`).
+**Prerequisites:** Ollama running with that model (`ollama list`).
 
 ```bash
 python -m validation.run_finetuned_eval
@@ -117,7 +117,7 @@ Example:
 | `metrics.py` | Rule-based scorers: `score_correctness`, `score_faithfulness`, `score_relevance`, and `validate_summary()`. |
 | `synthetic_data.py` | Generates `data/synthetic_eval.jsonl` with (transcript, reference_summary, urgency). |
 | `run_validation.py` | CLI: load eval data, get summaries (reference or API), run metrics, print report. |
-| `run_finetuned_eval.py` | CLI: evaluate better-triage on combined_triage_training.jsonl; correctness, faithfulness, relevance, urgency accuracy; direct Ollama calls. |
+| `run_finetuned_eval.py` | CLI: evaluate Ollama triage model on combined_triage_training.jsonl; correctness, faithfulness, relevance, urgency accuracy; direct Ollama calls. |
 | `data/synthetic_eval.jsonl` | Generated eval set (create with `--generate`). |
 
 ## Extending

@@ -180,9 +180,9 @@ See `docs/EC2_DEPLOYMENT_GUIDE.md` for detailed instructions.
 ### Environment Variables (`.env`)
 
 ```
-# Ollama LLM (set OLLAMA_MODEL_NAME to your finetuned model, e.g. better-triage)
+# Ollama LLM (default: triage-mistral from mistral_local_deploy/)
 OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL_NAME=better-triage
+OLLAMA_MODEL_NAME=triage-mistral
 TRUST_LLM_URGENCY=1
 
 # Backend API (for patient history)
@@ -199,7 +199,7 @@ PORT=8100
 
 ### Finetuned Model and Verification
 
-`OLLAMA_MODEL_NAME` selects which Ollama model handles triage. Set `OLLAMA_MODEL_NAME=better-triage` (or your model name) to use your finetuned model. To verify the model in use, run a triage request and check server logs for `[TRIAGE] model=better-triage`.
+`OLLAMA_MODEL_NAME` selects which Ollama model handles triage (default **`triage-mistral`**, built via `mistral_local_deploy/convert_model.sh`). Override in `.env` if you use another tag. Verify in server logs: `[TRIAGE] Calling Ollama model: triage-mistral`.
 
 `TRUST_LLM_URGENCY=1` disables urgency validation overrides so the finetuned model's classification is returned as-is.
 
